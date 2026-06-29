@@ -1060,49 +1060,63 @@ def _do_process_video():
     t0 = time.time()
     log_lines = []
 
+    # last_annotated_frame: keep last annotated frame to replay for skip frames
+    # This preserves video timeline (every frame written, not just processed ones)
+    last_annotated_frame = None
+    stop_processing = False
+
     while True:
         ret, frame = cap.read()
         if not ret:
             log_lines.append(f"[{time.strftime('%H:%M:%S')}] ✅ End of video at frame {frame_idx}")
             break
-        if frame_idx % stride == 0:
+
+        if frame_idx % stride == 0 and not stop_processing:
             if processed >= max_proc:
-                log_lines.append(f"[{time.strftime('%H:%M:%S')}] ✅ Max frames ({max_proc}) reached")
-                break
-            tmp_f = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
-            cv2.imwrite(tmp_f.name, frame)
-            try:
-                det = detector.detect(tmp_f.name)
-                pci_in = eb.detections_to_pci_input(det)
-                pci_res = pci_engine.calculate_pci(pci_in, image_area_px=det.image_shape[0]*det.image_shape[1])
-                _save_history("video", f"frame_{frame_idx}", det, pci_res)
-                pci_series.append({"frame": frame_idx, "pci": pci_res.pci_value, "detections": len(det.detections), "rating": pci_res.rating, "infer_ms": det.inference_time_ms})
-                log_lines.append(f"[{time.strftime('%H:%M:%S')}] F{frame_idx}/{total} — PCI {pci_res.pci_value:.1f} ({pci_res.rating}) — {len(det.detections)} det — {det.inference_time_ms:.0f}ms")
-                # Annotate
-                for d in det.detections:
-                    x1, y1, x2, y2 = [int(v) for v in d.bbox]
-                    bgr = CODE_COLORS_BGR.get(d.code, (100, 100, 100))
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), bgr, 2)
-                    cv2.rectangle(frame, (x1, y1-22), (x1+120, y1), bgr, -1)
-                    cv2.putText(frame, f"{d.code} {d.confidence:.2f}", (x1+4, y1-6), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255,255,255), 1)
-                if st.session_state["video_overlay"]:
-                    pcibgr = {"Good":(46,204,113),"Satisfactory":(39,174,96),"Fair":(15,196,241),"Poor":(14,126,230),"Very Poor":(44,62,231),"Failed":(59,23,192)}.get(pci_res.rating, (100,100,100))
-                    cv2.rectangle(frame, (0,0), (320,70), (0,0,0), -1)
-                    cv2.putText(frame, f"PCI: {pci_res.pci_value:.1f} ({pci_res.rating})", (10,28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, pcibgr, 2)
-                    cv2.putText(frame, f"Det: {len(det.detections)} | F: {frame_idx}/{total}", (10,55), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200,200,200), 1)
-                out.write(frame)
-                processed += 1
-            except Exception as e:
-                log_lines.append(f"[{time.strftime('%H:%M:%S')}] ⚠️ F{frame_idx}: {e}")
-                st.warning(f"Frame {frame_idx}: {e}")
-            Path(tmp_f.name).unlink(missing_ok=True)
-            elapsed = time.time() - t0
-            eta = (elapsed/processed)*(max_proc-processed) if processed else 0
-            with col_prog:
-                progress.progress(processed/max_proc, text=f"⏳ Frame {frame_idx}/{total} — PCI {pci_res.pci_value:.1f} ({pci_res.rating}) — {processed}/{max_proc} — ETA {eta:.0f}s")
-            # Update console real-time (last 15 lines)
-            with console_placeholder:
-                st.code("\n".join(log_lines[-15:]), language="text")
+                stop_processing = True
+                log_lines.append(f"[{time.strftime('%H:%M:%S')}] ✅ Max frames ({max_proc}) reached — replaying last annotated for remaining frames")
+            else:
+                tmp_f = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+                cv2.imwrite(tmp_f.name, frame)
+                try:
+                    det = detector.detect(tmp_f.name)
+                    pci_in = eb.detections_to_pci_input(det)
+                    pci_res = pci_engine.calculate_pci(pci_in, image_area_px=det.image_shape[0]*det.image_shape[1])
+                    _save_history("video", f"frame_{frame_idx}", det, pci_res)
+                    pci_series.append({"frame": frame_idx, "pci": pci_res.pci_value, "detections": len(det.detections), "rating": pci_res.rating, "infer_ms": det.inference_time_ms})
+                    log_lines.append(f"[{time.strftime('%H:%M:%S')}] F{frame_idx}/{total} — PCI {pci_res.pci_value:.1f} ({pci_res.rating}) — {len(det.detections)} det — {det.inference_time_ms:.0f}ms")
+                    # Annotate
+                    for d in det.detections:
+                        x1, y1, x2, y2 = [int(v) for v in d.bbox]
+                        bgr = CODE_COLORS_BGR.get(d.code, (100, 100, 100))
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), bgr, 2)
+                        cv2.rectangle(frame, (x1, y1-22), (x1+120, y1), bgr, -1)
+                        cv2.putText(frame, f"{d.code} {d.confidence:.2f}", (x1+4, y1-6), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255,255,255), 1)
+                    if st.session_state["video_overlay"]:
+                        pcibgr = {"Good":(46,204,113),"Satisfactory":(39,174,96),"Fair":(15,196,241),"Poor":(14,126,230),"Very Poor":(44,62,231),"Failed":(59,23,192)}.get(pci_res.rating, (100,100,100))
+                        cv2.rectangle(frame, (0,0), (320,70), (0,0,0), -1)
+                        cv2.putText(frame, f"PCI: {pci_res.pci_value:.1f} ({pci_res.rating})", (10,28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, pcibgr, 2)
+                        cv2.putText(frame, f"Det: {len(det.detections)} | F: {frame_idx}/{total}", (10,55), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200,200,200), 1)
+                    last_annotated_frame = frame.copy()
+                    out.write(frame)
+                    processed += 1
+                except Exception as e:
+                    log_lines.append(f"[{time.strftime('%H:%M:%S')}] ⚠️ F{frame_idx}: {e}")
+                    st.warning(f"Frame {frame_idx}: {e}")
+                    out.write(frame)  # write unannotated on error
+                Path(tmp_f.name).unlink(missing_ok=True)
+                elapsed = time.time() - t0
+                eta = (elapsed/processed)*(max_proc-processed) if processed else 0
+                with col_prog:
+                    progress.progress(processed/max_proc, text=f"⏳ Frame {frame_idx}/{total} — PCI {pci_res.pci_value:.1f} ({pci_res.rating}) — {processed}/{max_proc} — ETA {eta:.0f}s")
+                with console_placeholder:
+                    st.code("\n".join(log_lines[-15:]), language="text")
+        else:
+            # Skip frame (not in stride) or past max_proc — write to preserve timeline
+            if last_annotated_frame is not None:
+                out.write(last_annotated_frame)
+            else:
+                out.write(frame)  # original frame if no annotated yet
         frame_idx += 1
     cap.release()
     out.release()
