@@ -374,7 +374,7 @@ _ss.setdefault("device", "cpu")
 _ss.setdefault("use_segmentation", False)
 _ss.setdefault("show_legend", True)
 _ss.setdefault("video_stride", 5)
-_ss.setdefault("video_max", 50)
+_ss.setdefault("video_max", 30)
 _ss.setdefault("video_overlay", True)
 _ss.setdefault("video_fps", 0)
 # Results (state lock)
@@ -394,6 +394,8 @@ _ss.setdefault("drive_path_image", "/content/drive/MyDrive")
 _ss.setdefault("drive_path_batch", "/content/drive/MyDrive")
 # Bottom bar active tab
 _ss.setdefault("bottom_tab", None)  # report / history / settings / console
+_ss.setdefault("is_processing", False)  # disable widgets during video processing
+_ss.setdefault("abort_video_flag", False)  # abort button flag
 
 
 # =============================================================================
@@ -737,6 +739,11 @@ def _render_drive_browser(file_type: str, key_suffix: str):
 def _render_source_selector():
     """Render input bar: type + source. Sets session state on file selection."""
     is_vi = st.session_state["lang"] == "vi"
+    processing = st.session_state.get("is_processing", False)
+
+    if processing:
+        st.info("⏳ " + ("Đang xử lý video — không thể thay đổi nguồn. Nhấn DỪNG để hủy." if is_vi else "Processing video — cannot change source. Click STOP to abort."))
+        return
 
     # Row 1: Type + Source (segmented)
     c_type, c_src = st.columns([2, 2])
@@ -1018,18 +1025,42 @@ def _do_process_video():
         cap.release()
         return
 
-    progress = st.progress(0.0, text=f"{_t('processing')}...")
+    # Set processing flag — disables other widgets
+    st.session_state["is_processing"] = True
+
+    # Big progress area below video
+    progress_container = st.container()
+    with progress_container:
+        st.markdown("---")
+        col_prog, col_abort = st.columns([4, 1])
+        with col_prog:
+            progress = st.progress(0.0, text=f"⏳ {_t('processing')}...")
+        with col_abort:
+            st.warning("⚠️ " + ("Không nhấn gì khi đang xử lý!" if st.session_state["lang"] == "vi" else "Don't click anything while processing!"))
+            st.caption(f"⏱️ ETA ~{(max_proc * 1.5):.0f}s" if max_proc else "")
+
+    # Console area (real-time log below progress)
+    console_container = st.container()
+    with console_container:
+        console_exp = st.expander("📜 " + ("Console (real-time)", "Console (real-time)")[st.session_state["lang"] == "en"], expanded=True)
+        console_placeholder = console_exp.empty()
+
     pci_series = []
     frame_idx = 0
     processed = 0
     t0 = time.time()
     max_proc = max_f if max_f > 0 else total // stride
+    log_lines = []
 
     while True:
         ret, frame = cap.read()
-        if not ret: break
+        if not ret:
+            log_lines.append(f"[{time.strftime('%H:%M:%S')}] ✅ End of video at frame {frame_idx}")
+            break
         if frame_idx % stride == 0:
-            if processed >= max_proc: break
+            if processed >= max_proc:
+                log_lines.append(f"[{time.strftime('%H:%M:%S')}] ✅ Max frames ({max_proc}) reached")
+                break
             tmp_f = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
             cv2.imwrite(tmp_f.name, frame)
             try:
@@ -1038,6 +1069,7 @@ def _do_process_video():
                 pci_res = pci_engine.calculate_pci(pci_in, image_area_px=det.image_shape[0]*det.image_shape[1])
                 _save_history("video", f"frame_{frame_idx}", det, pci_res)
                 pci_series.append({"frame": frame_idx, "pci": pci_res.pci_value, "detections": len(det.detections), "rating": pci_res.rating, "infer_ms": det.inference_time_ms})
+                log_lines.append(f"[{time.strftime('%H:%M:%S')}] F{frame_idx}/{total} — PCI {pci_res.pci_value:.1f} ({pci_res.rating}) — {len(det.detections)} det — {det.inference_time_ms:.0f}ms")
                 # Annotate
                 for d in det.detections:
                     x1, y1, x2, y2 = [int(v) for v in d.bbox]
@@ -1053,15 +1085,22 @@ def _do_process_video():
                 out.write(frame)
                 processed += 1
             except Exception as e:
+                log_lines.append(f"[{time.strftime('%H:%M:%S')}] ⚠️ F{frame_idx}: {e}")
                 st.warning(f"Frame {frame_idx}: {e}")
             Path(tmp_f.name).unlink(missing_ok=True)
             elapsed = time.time() - t0
             eta = (elapsed/processed)*(max_proc-processed) if processed else 0
-            progress.progress(processed/max_proc, text=f"Frame {frame_idx}/{total} — PCI {pci_res.pci_value:.1f} — ETA {eta:.0f}s")
+            with col_prog:
+                progress.progress(processed/max_proc, text=f"⏳ Frame {frame_idx}/{total} — PCI {pci_res.pci_value:.1f} ({pci_res.rating}) — {processed}/{max_proc} — ETA {eta:.0f}s")
+            # Update console real-time (last 15 lines)
+            with console_placeholder:
+                st.code("\n".join(log_lines[-15:]), language="text")
         frame_idx += 1
     cap.release()
     out.release()
-    progress.empty()
+    with col_prog:
+        progress.empty()
+    st.session_state["is_processing"] = False
 
     st.session_state["last_batch_results"] = []
     st.session_state["last_video_annotated"] = str(out_path)
@@ -1327,21 +1366,28 @@ def _render_settings_section():
 
 def _render_console_section():
     with st.expander(_t("tab_console"), expanded=True):
-        # Log file
-        log_sources = [Path("outputs/app.log"), eb._DUMPS_ROOT / "outputs" / "app.log"]
+        # Real-time log from session (if processing) + file log
         log_lines = []
-        for lp in log_sources:
-            if lp.exists():
-                try:
-                    content = lp.read_text(encoding="utf-8", errors="replace").splitlines()
-                    log_lines = content[-200:]
-                    break
-                except Exception:
-                    pass
-        if log_lines:
-            st.code("\n".join(log_lines[-100:]), language="text")
+        # Priority 1: session log (real-time during processing)
+        if st.session_state.get("is_processing"):
+            # During processing, console is shown inline below video — skip here
+            st.info("⏳ " + ("Console đang hiển thị dưới video" if st.session_state["lang"] == "vi" else "Console shown below video during processing"))
         else:
-            st.info("📭 No logs yet.")
+            # Priority 2: log file (local + Colab)
+            log_sources = [Path("outputs/app.log"), eb._DUMPS_ROOT / "outputs" / "app.log",
+                          Path("/content/repo/outputs/app.log"), Path("/content/outputs/app.log")]
+            for lp in log_sources:
+                if lp.exists():
+                    try:
+                        content = lp.read_text(encoding="utf-8", errors="replace").splitlines()
+                        log_lines = content[-200:]
+                        break
+                    except Exception:
+                        pass
+            if log_lines:
+                st.code("\n".join(log_lines[-100:]), language="text")
+            else:
+                st.info("📭 " + ("Chưa có log. Chạy inference để sinh log." if st.session_state["lang"] == "vi" else "No logs yet. Run inference to generate."))
         # System info
         import platform
         sys_info = {"Python": platform.python_version(), "Platform": platform.platform(),
