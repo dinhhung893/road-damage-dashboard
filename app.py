@@ -50,9 +50,9 @@ st.set_page_config(
 # =============================================================================
 st.markdown("""
 <style>
-    /* Layout — full width, tight padding */
-    .main .block-container { max-width: 100%; padding-top: 0.5rem; padding-bottom: 0.5rem; padding-left: 1.5rem; padding-right: 1.5rem; }
-    [data-testid="stVerticalBlock"] { gap: 0.6rem; }
+    /* Layout — centered, max-width for readability on all screens */
+    .main .block-container { max-width: 1200px; margin: 0 auto; padding-top: 0.5rem; padding-bottom: 0.5rem; padding-left: 1rem; padding-right: 1rem; }
+    [data-testid="stVerticalBlock"] { gap: 0.5rem; }
     [data-testid="stHorizontalBlock"] { gap: 0.8rem; }
 
     /* Typography */
@@ -128,10 +128,15 @@ st.markdown("""
     /* File info card */
     .file-info { background: rgba(128,128,128,0.04); border-radius: 8px; padding: 8px 12px; font-size: 0.85em; }
 
-    /* Responsive */
+    /* Responsive — 1366x768 and smaller */
+    @media (max-width: 1400px) {
+        .main .block-container { max-width: 1100px; padding-left: 0.8rem; padding-right: 0.8rem; }
+    }
     @media (max-width: 768px) {
-        .main .block-container { padding-left: 0.5rem; padding-right: 0.5rem; }
+        .main .block-container { max-width: 100%; padding-left: 0.5rem; padding-right: 0.5rem; }
         h1 { font-size: 1.2rem; }
+        h3 { font-size: 0.95rem; }
+        .config-card { padding: 8px; }
     }
 </style>
 """, unsafe_allow_html=True)
@@ -861,7 +866,7 @@ def _render_preview_and_config():
                 st.session_state.get("sel_video_path") or
                 st.session_state.get("sel_batch_paths"))
 
-    col_preview, col_config = st.columns([3, 1])
+    col_preview, col_config = st.columns([2.5, 1])
 
     with col_config:
         # Config panel (always visible)
@@ -898,8 +903,12 @@ def _render_preview_and_config():
 
         # Process button
         st.markdown("---")
-        btn_label = {("video", True): _t("btn_process_video"), ("image", True): _t("btn_process_image"),
-                     ("batch", True): _t("btn_process_batch")}.get((sel_type, has_file), _t("btn_process_image"))
+        if sel_type == "video":
+            btn_label = _t("btn_process_video")
+        elif sel_type == "batch":
+            btn_label = _t("btn_process_batch")
+        else:
+            btn_label = _t("btn_process_image")
         if not has_file:
             st.button(btn_label, type="primary", disabled=True, help=_t("no_file"))
         else:
@@ -1351,22 +1360,22 @@ def _render_console_section():
 # =============================================================================
 # Main layout
 # =============================================================================
-# Top bar — title + lang + pre-flight
-st.markdown(f"""
-# 🛣️ {_t('app_title')}
-**{_t('app_subtitle')}** · YOLOv12s + FastSAM + ASTM D6433
-""")
-c_lang, c_pf = st.columns([1, 3])
-with c_lang:
+# Top bar — title (left) + lang + pre-flight (right, compact)
+c_title, c_right = st.columns([3, 1])
+with c_title:
+    st.markdown(f"### 🛣️ {_t('app_title')}")
+    st.caption(f"{_t('app_subtitle')} · YOLOv12s + FastSAM + ASTM D6433")
+with c_right:
     lo = {"vi": "🇻🇳 VI", "en": "🇬🇧 EN"}
-    st.session_state["lang"] = st.selectbox("🌐", options=list(lo.keys()), format_func=lambda x: lo[x], key="lang_sel", label_visibility="collapsed")
-with c_pf:
-    pf_ok, pf_w = preflight_check()
-    if pf_ok:
-        st.caption(f"✓ {_t('pre_flight')}: {_t('model_ready')} + {_t('pci_ready')}")
-    else:
-        for w in pf_w:
-            st.caption(w)
+    rc1, rc2 = st.columns(2)
+    with rc1:
+        st.session_state["lang"] = st.selectbox("🌐", options=list(lo.keys()), format_func=lambda x: lo[x], key="lang_sel", label_visibility="collapsed")
+    with rc2:
+        pf_ok, _ = preflight_check()
+        if pf_ok:
+            st.caption("✅ Ready")
+        else:
+            st.caption("⚠️ Check model")
 
 # Pipeline indicator (top, small)
 st.markdown(pipeline_indicator_html(1), unsafe_allow_html=True)
