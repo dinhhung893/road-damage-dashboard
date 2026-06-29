@@ -347,8 +347,6 @@ def _rating_name(rating: str) -> str:
         "Good", "Satisfactory", "Fair", "Poor", "Very Poor", "Failed"
     ) else rating
 
-# (Continue: session state, helpers, engines, DB, main layout — next edits)
-
 
 # =============================================================================
 # Session state — state lock for preview + config + results
@@ -625,9 +623,6 @@ def run_inference(image_path, source: str, file_name: str):
     return det_result, pci_result, (t1 - t0) * 1000
 
 
-# (Continue: Drive browser UI, main layout — next edits)
-
-
 # =============================================================================
 # Drive browser — breadcrumb + subfolders + thumbnail grid
 # =============================================================================
@@ -854,9 +849,6 @@ def _render_source_selector():
                             st.session_state["sel_video_path"] = None
                             st.session_state["sel_batch_paths"] = []
                             st.rerun()
-
-
-# (Continue: preview area, config panel, results, bottom bar — next edits)
 
 
 # =============================================================================
@@ -1088,9 +1080,6 @@ def _do_process_batch():
     st.session_state["last_det"] = None
     st.session_state["last_pci"] = None
     st.session_state["last_source_name"] = f"batch_{len(results)}"
-
-
-# (Continue: results, bottom bar, footer — next edits)
 
 
 # =============================================================================
