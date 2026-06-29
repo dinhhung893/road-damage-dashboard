@@ -33,7 +33,7 @@ import streamlit as st
 from PIL import Image, ImageDraw, ImageFont
 
 import engine_bridge as eb
-from engine_bridge import CODE_VN, CODE_COLORS_RGB, CODE_COLORS_BGR
+from engine_bridge import CODE_COLORS_RGB, CODE_COLORS_BGR
 
 # =============================================================================
 # Page config
