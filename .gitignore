@@ -1,0 +1,34 @@
+# Images (not needed in repo)
+*.png
+*.PNG
+*.jpg
+*.JPG
+*.jpeg
+image*
+IMG_*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+
+# Outputs (runtime-generated)
+outputs/
+runs/
+
+# Streamlit
+.streamlit/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Temp
+*.tmp
+*.bak
