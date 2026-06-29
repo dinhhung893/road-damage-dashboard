@@ -22,13 +22,16 @@ def _find_dumps_root() -> Path:
         if p.exists() and (p / "src" / "engine").exists():
             return p
     # adaptive is at <root>/adaptive, dumps should be at <root>/dumps
+    # On Colab git clone: repo has dumps_src/ (engine source only, models download separately)
     here = Path(__file__).resolve().parent
     candidates = [
         here.parent / "dumps",                          # sibling of adaptive (Windows: D:\Antigravity\New folder\dumps)
         here / "dumps",                                  # nested inside adaptive
+        here / "dumps_src",                              # git repo: dumps_src/ has src/ + data/ (no models)
         Path("/content/drive/MyDrive/New folder/dumps"), # Colab Drive mount (common)
         Path("/content/dumps"),                          # Colab direct upload
         Path("/content/adaptive/dumps"),                 # Colab nested
+        Path("/content/repo/dumps_src"),                 # Colab git clone: repo has dumps_src/
     ]
     for c in candidates:
         if c.exists() and (c / "src" / "engine").exists():
