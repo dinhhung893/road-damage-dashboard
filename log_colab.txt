@@ -1,0 +1,3 @@
+# Colab log — synced from Colab every 30s by log_sync cell
+# Devin Local: git pull → read this file → debug real-time
+# Filtered: watchdog/inotify noise removed
