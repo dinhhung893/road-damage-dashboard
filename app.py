@@ -936,11 +936,19 @@ def _render_preview_and_config():
             return
 
         if sel_type == "video":
-            vp = st.session_state.get("sel_video_path") or st.session_state.get("sel_file_path")
-            if vp and Path(vp).exists():
-                st.video(str(vp))
-                # File info
-                cap = cv2.VideoCapture(str(vp))
+            # After processing: show annotated video. Before: show original.
+            annotated = st.session_state.get("last_video_annotated")
+            if annotated and Path(annotated).exists():
+                st.markdown(f"**🎬 {_t('done')} — {_t('results_title')}**")
+                st.video(annotated)
+            else:
+                vp = st.session_state.get("sel_video_path") or st.session_state.get("sel_file_path")
+                if vp and Path(vp).exists():
+                    st.video(str(vp))
+            # File info (always show)
+            vp_info = st.session_state.get("sel_video_path") or st.session_state.get("sel_file_path")
+            if vp_info and Path(vp_info).exists():
+                cap = cv2.VideoCapture(str(vp_info))
                 if cap.isOpened():
                     w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                     fps = cap.get(cv2.CAP_PROP_FPS) or 0
@@ -950,7 +958,7 @@ def _render_preview_and_config():
                     st.markdown(f"""
                     <div class="file-info">
                     📋 <b>{st.session_state['sel_file_name']}</b><br/>
-                    📐 {w}×{h} @ {fps:.0f}fps · ⏱️ {dur:.0f}s · 📦 {_format_size(Path(vp).stat().st_size)}
+                    📐 {w}×{h} @ {fps:.0f}fps · ⏱️ {dur:.0f}s · 📦 {_format_size(Path(vp_info).stat().st_size)}
                     </div>
                     """, unsafe_allow_html=True)
 
@@ -1037,16 +1045,12 @@ def _do_process_video():
     # Calculate max frames BEFORE rendering progress (needed for ETA display)
     max_proc = max_f if max_f > 0 else total // stride
 
-    # Big progress area below video
+    # Progress + Console — single column below video (compact, no warning column)
     progress_container = st.container()
     with progress_container:
         st.markdown("---")
-        col_prog, col_abort = st.columns([4, 1])
-        with col_prog:
-            progress = st.progress(0.0, text=f"⏳ {_t('processing')}...")
-        with col_abort:
-            st.warning("⚠️ " + ("Không nhấn gì khi đang xử lý!" if st.session_state["lang"] == "vi" else "Don't click anything while processing!"))
-            st.caption(f"⏱️ ETA ~{(max_proc * 1.5):.0f}s" if max_proc else "")
+        progress = st.progress(0.0, text=f"⏳ {_t('processing')}... (~{(max_proc * 1.5):.0f}s)" if max_proc else f"⏳ {_t('processing')}...")
+        st.caption("⚠️ " + ("Đang xử lý — vui lòng đợi, không chuyển tab" if st.session_state["lang"] == "vi" else "Processing — please wait, don't switch tabs"))
 
     # Console area (real-time log below progress)
     console_container = st.container()
@@ -1107,8 +1111,7 @@ def _do_process_video():
                 Path(tmp_f.name).unlink(missing_ok=True)
                 elapsed = time.time() - t0
                 eta = (elapsed/processed)*(max_proc-processed) if processed else 0
-                with col_prog:
-                    progress.progress(processed/max_proc, text=f"⏳ Frame {frame_idx}/{total} — PCI {pci_res.pci_value:.1f} ({pci_res.rating}) — {processed}/{max_proc} — ETA {eta:.0f}s")
+                progress.progress(processed/max_proc, text=f"⏳ Frame {frame_idx}/{total} — PCI {pci_res.pci_value:.1f} ({pci_res.rating}) — {processed}/{max_proc} — ETA {eta:.0f}s")
                 with console_placeholder:
                     st.code("\n".join(log_lines[-15:]), language="text")
         else:
@@ -1120,8 +1123,7 @@ def _do_process_video():
         frame_idx += 1
     cap.release()
     out.release()
-    with col_prog:
-        progress.empty()
+    progress.empty()
     st.session_state["is_processing"] = False
 
     st.session_state["last_batch_results"] = []
@@ -1159,15 +1161,11 @@ def _render_results():
     """Render results from session_state (state lock)."""
     sel_type = st.session_state["sel_type"]
 
-    # Video results
-    if sel_type == "video" and st.session_state.get("last_video_annotated"):
+    # Video results — video already shown in preview area, here only chart + downloads
+    if sel_type == "video" and st.session_state.get("last_pci_series"):
         st.markdown(f"---")
         st.markdown(f"### {_t('results_title')}")
         pipeline_indicator_html(4)
-
-        # Annotated video
-        st.markdown(f"**🎬 {_t('done')}**")
-        st.video(st.session_state["last_video_annotated"])
 
         # PCI time-series
         series = st.session_state.get("last_pci_series", [])
