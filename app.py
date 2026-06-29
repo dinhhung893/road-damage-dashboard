@@ -1034,6 +1034,9 @@ def _do_process_video():
     # Set processing flag — disables other widgets
     st.session_state["is_processing"] = True
 
+    # Calculate max frames BEFORE rendering progress (needed for ETA display)
+    max_proc = max_f if max_f > 0 else total // stride
+
     # Big progress area below video
     progress_container = st.container()
     with progress_container:
@@ -1055,7 +1058,6 @@ def _do_process_video():
     frame_idx = 0
     processed = 0
     t0 = time.time()
-    max_proc = max_f if max_f > 0 else total // stride
     log_lines = []
 
     while True:
