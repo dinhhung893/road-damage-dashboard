@@ -125,6 +125,9 @@ st.markdown("""
     ::-webkit-scrollbar-thumb { background: rgba(128,128,128,0.2); border-radius: 4px; }
     ::-webkit-scrollbar-thumb:hover { background: rgba(128,128,128,0.4); }
 
+    /* Hide Streamlit "running person" StatusWidget — we have our own progress bar */
+    div[data-testid="stStatusWidget"] { visibility: hidden; height: 0%; position: fixed; }
+
     /* File info card */
     .file-info { background: rgba(128,128,128,0.04); border-radius: 8px; padding: 8px 12px; font-size: 0.85em; }
 
