@@ -11,6 +11,8 @@ Trên Colab (GPU):
 from __future__ import annotations
 
 import argparse
+import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -19,6 +21,36 @@ import cv2
 
 import engine_bridge as eb
 from engine_bridge import CODE_COLORS_BGR
+
+
+def _reencode_h264_inplace(path: Path) -> None:
+    """Transcode mp4v output to browser-playable H264/yuv420p + faststart (in place).
+
+    OpenCV writes mp4v (MPEG-4 Part 2) which HTML5 <video> / st.video cannot decode.
+    ffmpeg (pre-installed on Colab) converts to H264 baseline so it plays everywhere
+    and downloads fast (+faststart = progressive streaming, smaller file).
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        print("ffmpeg not found — output stays mp4v (may not play in browser)")
+        return
+    tmp = path.with_name(path.stem + "_h264tmp.mp4")
+    try:
+        r = subprocess.run(
+            [ffmpeg, "-y", "-i", str(path), "-c:v", "libx264", "-preset", "veryfast",
+             "-crf", "23", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an", str(tmp)],
+            capture_output=True, text=True, timeout=1800,
+        )
+        if r.returncode == 0 and tmp.exists() and tmp.stat().st_size > 1000:
+            path.unlink(missing_ok=True)
+            tmp.rename(path)
+            print(f"Re-encoded to browser H264: {path} ({path.stat().st_size/1e6:.1f}MB)")
+        else:
+            tmp.unlink(missing_ok=True)
+            print(f"ffmpeg re-encode failed (rc={r.returncode}): {r.stderr[-300:]}")
+    except Exception as e:
+        tmp.unlink(missing_ok=True)
+        print(f"ffmpeg re-encode error: {e}")
 
 
 def render_video(
@@ -54,16 +86,16 @@ def render_video(
     if max_frames:
         print(f"Max frames cap: {max_frames}")
 
-    # Output writer — codec fallback: avc1/H264 (browser-compatible) → mp4v
+    # Output writer — mp4v is reliable everywhere; we re-encode to H264 after (ffmpeg).
     out = None
-    for codec in ["avc1", "H264", "mp4v"]:
+    for codec in ["mp4v", "MJPG"]:
         fourcc = cv2.VideoWriter_fourcc(*codec)
         out = cv2.VideoWriter(str(output_path), fourcc, fps, (w, h))
         if out.isOpened():
             print(f"Video codec: {codec}")
             break
     if not out.isOpened():
-        raise RuntimeError(f"Cannot open VideoWriter with any codec (avc1/H264/mp4v) for {output_path}")
+        raise RuntimeError(f"Cannot open VideoWriter with any codec (mp4v/MJPG) for {output_path}")
 
     frame_idx = 0
     processed = 0
@@ -150,6 +182,9 @@ def render_video(
         cap.release()
         out.release()
         Path(tmp_frame_path).unlink(missing_ok=True)
+
+    # Make output browser-playable + fast to download
+    _reencode_h264_inplace(output_path)
 
     elapsed = time.time() - t_start
     print(f"\nDone: {processed} frames processed in {elapsed:.1f}s")

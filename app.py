@@ -17,8 +17,11 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
+import shutil
 import sqlite3
+import subprocess
 import tempfile
 import time
 import urllib.request
@@ -34,6 +37,124 @@ from PIL import Image, ImageDraw, ImageFont
 
 import engine_bridge as eb
 from engine_bridge import CODE_COLORS_RGB, CODE_COLORS_BGR
+
+# =============================================================================
+# Unified logging — single file, flushed immediately, cross-platform.
+# Captures BOTH dashboard events AND engine (root) logs into ONE file so the
+# Console tab + Colab log-sync can read everything. Survives Streamlit reruns
+# (logging registry persists; we guard against duplicate handlers).
+# =============================================================================
+class _FlushHandler(logging.FileHandler):
+    """FileHandler that flushes after every record (Streamlit stderr is block-buffered)."""
+    def emit(self, record):  # noqa: D401
+        super().emit(record)
+        try:
+            self.flush()
+        except Exception:
+            pass
+
+
+def _resolve_log_file() -> str:
+    # Colab → /content (read by log-sync cell); else OS temp dir (Windows-safe).
+    if os.path.isdir("/content"):
+        return "/content/app_unified.log"
+    return str(Path(tempfile.gettempdir()) / "road_damage_app.log")
+
+
+LOG_FILE = _resolve_log_file()
+
+
+def _init_logging() -> logging.Logger:
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    if not any(getattr(h, "_unified_handler", False) for h in root.handlers):
+        try:
+            fh = _FlushHandler(LOG_FILE, mode="a", encoding="utf-8")
+            fh._unified_handler = True  # type: ignore[attr-defined]
+            fh.setLevel(logging.INFO)
+            fh.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s %(name)s: %(message)s", "%H:%M:%S"))
+            root.addHandler(fh)
+        except Exception:
+            pass
+    return logging.getLogger("dashboard")
+
+
+applog = _init_logging()
+
+
+def _log(msg: str, level: str = "info") -> None:
+    """Write to unified log file (never raises — logging must not crash the app)."""
+    try:
+        getattr(applog, level, applog.info)(msg)
+    except Exception:
+        pass
+
+
+# =============================================================================
+# Video / file helpers — browser-compatible re-encode + Drive FUSE localization
+# =============================================================================
+def _ensure_browser_video(src_path) -> Path:
+    """Re-encode OpenCV output to H264 / yuv420p + faststart so HTML5 <video>
+    (st.video) can play it AND it downloads fast.
+
+    OpenCV on Colab writes mp4v (MPEG-4 Part 2) — Chrome/Firefox CANNOT decode it
+    in a <video> tag, so st.video shows nothing. ffmpeg (pre-installed on Colab)
+    transcodes to H264 baseline yuv420p which every browser plays; +faststart moves
+    the moov atom to the front for instant/progressive streaming + faster download.
+    """
+    src_path = Path(src_path)
+    ffmpeg = shutil.which("ffmpeg")
+    if not src_path.exists():
+        return src_path
+    if not ffmpeg:
+        _log("ffmpeg not found — video stays mp4v (may not play in browser)", "warning")
+        return src_path
+    h264 = src_path.with_name(src_path.stem + "_web.mp4")
+    try:
+        _log(f"Re-encoding video -> H264 (browser-compatible + faststart): {src_path.name}")
+        r = subprocess.run(
+            [ffmpeg, "-y", "-i", str(src_path),
+             "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+             "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an", str(h264)],
+            capture_output=True, text=True, timeout=900,
+        )
+        if r.returncode == 0 and h264.exists() and h264.stat().st_size > 1000:
+            old_mb = src_path.stat().st_size / 1e6
+            new_mb = h264.stat().st_size / 1e6
+            _log(f"H264 OK: {h264.name} ({new_mb:.1f}MB, was {old_mb:.1f}MB)")
+            try:
+                src_path.unlink(missing_ok=True)  # drop bulky mp4v
+            except Exception:
+                pass
+            return h264
+        _log(f"ffmpeg re-encode failed (rc={r.returncode}): {r.stderr[-400:]}", "error")
+    except subprocess.TimeoutExpired:
+        _log("ffmpeg timeout (>15min) — keeping mp4v", "error")
+    except Exception as e:
+        _log(f"ffmpeg exception: {e}", "error")
+    return src_path
+
+
+def _localize(path) -> Path:
+    """Copy a Google-Drive (FUSE) file to fast local storage before cv2/PIL touch it.
+
+    Drive's FUSE mount hangs/stalls on the random-access reads that cv2.VideoCapture
+    and PIL.Image.open perform. Copying to /content (or temp) first is the standard
+    Colab workaround. Local paths are returned unchanged.
+    """
+    p = Path(path)
+    sp = str(p).replace("\\", "/")
+    if "/content/drive" in sp or "/gdrive" in sp:
+        try:
+            local_dir = "/content" if os.path.isdir("/content") else tempfile.gettempdir()
+            dst = Path(local_dir) / f"localized_{int(time.time() * 1000)}_{p.name}"
+            shutil.copy2(str(p), str(dst))
+            _log(f"Localized Drive file -> {dst.name} ({dst.stat().st_size / 1e6:.1f}MB)")
+            return dst
+        except Exception as e:
+            _log(f"Localize failed for {sp}: {e}", "error")
+            return p
+    return p
 
 # =============================================================================
 # Page config
@@ -621,12 +742,15 @@ def damage_summary_html(det_result) -> str:
 def run_inference(image_path, source: str, file_name: str):
     detector = get_detector(st.session_state["confidence"], st.session_state["device"])
     pci_engine = get_pci_engine(st.session_state["sample_unit_area"])
+    image_path = _localize(image_path)  # Drive->local (FUSE stalls detector read)
+    _log(f"INFER START [{source}] {file_name} (device={st.session_state['device']}, conf={st.session_state['confidence']})")
     t0 = time.time()
     det_result = detector.detect(image_path)
     t1 = time.time()
     pci_input = eb.detections_to_pci_input(det_result)
     pci_result = pci_engine.calculate_pci(pci_input, image_area_px=det_result.image_shape[0] * det_result.image_shape[1])
     _save_history(source, file_name, det_result, pci_result)
+    _log(f"INFER DONE [{source}] {file_name}: {len(det_result.detections)} det, PCI {pci_result.pci_value:.1f} ({pci_result.rating}), {(t1-t0)*1000:.0f}ms")
     return det_result, pci_result, (t1 - t0) * 1000
 
 
@@ -814,22 +938,30 @@ def _render_source_selector():
     elif sel_source == "drive":
         result = _render_drive_browser(sel_type, sel_type)
         if result:
+            _copy_msg = "📥 " + ("Đang sao chép từ Drive..." if is_vi else "Copying from Drive...")
             if sel_type == "batch":
-                st.session_state["sel_batch_paths"] = [Path(p) for p in result]
-                st.session_state["sel_batch_pils"] = [Image.open(p) for p in result]
+                with st.spinner(_copy_msg):
+                    _local = [_localize(p) for p in result]
+                st.session_state["sel_batch_paths"] = [Path(p) for p in _local]
+                st.session_state["sel_batch_pils"] = [Image.open(p) for p in _local]
                 st.session_state["sel_file_name"] = f"drive_batch_{len(result)}"
                 st.session_state["sel_file_path"] = None
                 st.session_state["sel_pil"] = None
                 st.session_state["sel_video_path"] = None
-            else:
+            elif sel_type == "video":
+                # Keep Drive path; localized at processing time (avoid copying huge video on select)
                 st.session_state["sel_file_path"] = Path(result)
                 st.session_state["sel_file_name"] = Path(result).name
-                if sel_type == "video":
-                    st.session_state["sel_video_path"] = Path(result)
-                    st.session_state["sel_pil"] = None
-                else:
-                    st.session_state["sel_pil"] = Image.open(result)
-                    st.session_state["sel_video_path"] = None
+                st.session_state["sel_video_path"] = Path(result)
+                st.session_state["sel_pil"] = None
+                st.session_state["sel_batch_paths"] = []
+            else:
+                with st.spinner(_copy_msg):
+                    _local = _localize(result)
+                st.session_state["sel_file_path"] = Path(_local)
+                st.session_state["sel_file_name"] = Path(result).name
+                st.session_state["sel_pil"] = Image.open(_local)
+                st.session_state["sel_video_path"] = None
                 st.session_state["sel_batch_paths"] = []
 
     # Sample picker (fallback — from dumps/data/samples)
@@ -877,10 +1009,21 @@ def _render_preview_and_config():
             _t("sample_area"), 500.0, 20000.0, st.session_state["sample_unit_area"], 500.0,
             help="ASTM D6433: 5000 ft²")
 
+        # Device — detect CUDA; default to GPU when present, warn if user forces it without one
+        try:
+            import torch as _torch
+            _cuda_ok = _torch.cuda.is_available()
+        except Exception:
+            _cuda_ok = False
+        _dev_idx = 1 if (_cuda_ok and st.session_state.get("device") != "cpu") else 0
         st.session_state["device"] = st.selectbox(
             _t("device"), ["cpu", "cuda"],
-            format_func=lambda x: "CPU" if x == "cpu" else "CUDA (GPU)",
-            index=0 if st.session_state["device"] == "cpu" else 1)
+            format_func=lambda x: "CPU" if x == "cpu" else ("CUDA (GPU) ✅" if _cuda_ok else "CUDA (GPU) ⚠️"),
+            index=_dev_idx)
+        if st.session_state["device"] == "cuda" and not _cuda_ok:
+            st.warning("⚠️ " + ("CUDA không khả dụng — sẽ chạy CPU (chậm). Bật GPU: Runtime > Change runtime type > T4 GPU."
+                                 if st.session_state["lang"] == "vi" else
+                                 "CUDA unavailable — falls back to CPU (slow). Enable GPU: Runtime > Change runtime type > T4 GPU."))
 
         if sel_type == "video":
             st.markdown("---")
@@ -1005,6 +1148,8 @@ def _do_process_video():
         return
     detector = get_detector(st.session_state["confidence"], st.session_state["device"])
     pci_engine = get_pci_engine(st.session_state["sample_unit_area"])
+    vp = _localize(vp)  # copy Drive->local first (FUSE stalls cv2.VideoCapture)
+    _log(f"VIDEO START: {vp} (device={st.session_state['device']}, conf={st.session_state['confidence']})")
     cap = cv2.VideoCapture(str(vp))
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
@@ -1015,12 +1160,17 @@ def _do_process_video():
     out_dir = "/content" if os.path.isdir("/content") else str(Path.cwd() / "outputs")
     Path(out_dir).mkdir(parents=True, exist_ok=True)
     out_path = Path(out_dir) / "annotated_video.mp4"
+    # OpenCV writes mp4v reliably on every platform; we re-encode to browser-playable
+    # H264 with ffmpeg AFTER (avc1/H264 fourcc fail silently on Colab's opencv build).
     out = None
-    for codec in ["avc1", "H264", "mp4v"]:
+    for codec in ["mp4v", "MJPG"]:
         fourcc = cv2.VideoWriter_fourcc(*codec)
         out = cv2.VideoWriter(str(out_path), fourcc, fps, (w, h))
-        if out.isOpened(): break
+        if out.isOpened():
+            _log(f"VideoWriter codec={codec} {w}x{h}@{fps:.1f}fps total={total}")
+            break
     if not out or not out.isOpened():
+        _log("VideoWriter failed to open (all codecs)", "error")
         st.error("❌ VideoWriter codec fail")
         cap.release()
         return
@@ -1076,7 +1226,10 @@ def _do_process_video():
                     pci_res = pci_engine.calculate_pci(pci_in, image_area_px=det.image_shape[0]*det.image_shape[1])
                     _save_history("video", f"frame_{frame_idx}", det, pci_res)
                     pci_series.append({"frame": frame_idx, "pci": pci_res.pci_value, "detections": len(det.detections), "rating": pci_res.rating, "infer_ms": det.inference_time_ms})
-                    log_lines.append(f"[{time.strftime('%H:%M:%S')}] F{frame_idx}/{total} — PCI {pci_res.pci_value:.1f} ({pci_res.rating}) — {len(det.detections)} det — {det.inference_time_ms:.0f}ms")
+                    _line = f"F{frame_idx}/{total} — PCI {pci_res.pci_value:.1f} ({pci_res.rating}) — {len(det.detections)} det — {det.inference_time_ms:.0f}ms"
+                    log_lines.append(f"[{time.strftime('%H:%M:%S')}] {_line}")
+                    if processed % 5 == 0 or det.detections:
+                        _log(_line)  # mirror to unified log file (Console tab + Colab sync)
                     # Annotate
                     for d in det.detections:
                         x1, y1, x2, y2 = [int(v) for v in d.bbox]
@@ -1094,6 +1247,7 @@ def _do_process_video():
                     processed += 1
                 except Exception as e:
                     log_lines.append(f"[{time.strftime('%H:%M:%S')}] ⚠️ F{frame_idx}: {e}")
+                    _log(f"Frame {frame_idx} ERROR: {e}", "error")
                     st.warning(f"Frame {frame_idx}: {e}")
                     out.write(frame)  # write unannotated on error
                 Path(tmp_f.name).unlink(missing_ok=True)
@@ -1111,6 +1265,11 @@ def _do_process_video():
         frame_idx += 1
     cap.release()
     out.release()
+    _log(f"VIDEO RENDER DONE: {processed} frames in {time.time()-t0:.1f}s -> {out_path}")
+    # Re-encode mp4v -> H264 so st.video plays it AND downloads are fast (faststart).
+    _spin = "🎞️ " + ("Chuyển mã H264 (để xem & tải nhanh)..." if st.session_state["lang"] == "vi" else "Transcoding to H264 (playback & fast download)...")
+    with st.spinner(_spin):
+        out_path = _ensure_browser_video(out_path)
     progress.empty()
     st.session_state["is_processing"] = False
 
@@ -1119,6 +1278,7 @@ def _do_process_video():
     st.session_state["last_pci_series"] = pci_series
     st.session_state["last_source_name"] = st.session_state["sel_file_name"]
     st.success(f"✓ {processed} frames in {time.time()-t0:.1f}s")
+    _log(f"VIDEO COMPLETE -> {out_path}")
 
 
 def _do_process_batch():
@@ -1165,14 +1325,30 @@ def _render_results():
                 st.line_chart(df.set_index("frame")["pci"])
             with col_table:
                 st.dataframe(df, use_container_width=True, hide_index=True)
-            # Downloads — use file path (Streamlit handles streaming, faster than bytes)
-            c1, c2 = st.columns(2)
+            # Downloads — video is H264 + faststart (plays in browser, small, fast).
+            _is_vi = st.session_state["lang"] == "vi"
+            ann_path = st.session_state["last_video_annotated"]
+            c1, c2, c3 = st.columns(3)
             with c1:
-                ann_path = st.session_state["last_video_annotated"]
                 if ann_path and Path(ann_path).exists():
-                    st.download_button("📥 Video MP4", data=open(ann_path, "rb").read(),
+                    _sz = Path(ann_path).stat().st_size / 1e6
+                    st.download_button(f"📥 Video MP4 ({_sz:.1f}MB)", data=open(ann_path, "rb").read(),
                                        file_name="annotated.mp4", mime="video/mp4")
             with c2:
+                # Save to Drive — on Colab, downloading from Drive is FAR faster than via the tunnel
+                _drive = Path("/content/drive/MyDrive")
+                if ann_path and Path(ann_path).exists() and _drive.exists():
+                    if st.button("💾 " + ("Lưu vào Drive" if _is_vi else "Save to Drive"), key="vid_to_drive",
+                                 help="Tải nhanh: lưu vào Drive rồi tải từ Drive" if _is_vi else "Faster: save to Drive, download from Drive"):
+                        try:
+                            _dst = _drive / f"road_damage_annotated_{int(time.time())}.mp4"
+                            shutil.copy2(str(ann_path), str(_dst))
+                            _log(f"Saved annotated video to Drive: {_dst}")
+                            st.success(f"✓ Drive: MyDrive/{_dst.name}")
+                        except Exception as e:
+                            _log(f"Save-to-Drive failed: {e}", "error")
+                            st.error(f"❌ {e}")
+            with c3:
                 st.download_button("📥 PCI CSV", df.to_csv(index=False).encode("utf-8"), file_name="pci_timeseries.csv", mime="text/csv")
         pipeline_indicator_html(5)
         return
@@ -1386,6 +1562,8 @@ def _render_console_section():
             # Log file — read from /tmp first (outside Streamlit watch dir to prevent runOnSave loop),
             # then fallback to repo paths. Filter watchdog noise.
             log_sources = [
+                Path(LOG_FILE),                       # unified dashboard + engine log (primary)
+                Path("/content/app_unified.log"),
                 Path("/tmp/road_damage_app.log"),
                 Path(tempfile.gettempdir()) / "road_damage_app.log",
                 Path("outputs/app.log"),
@@ -1459,3 +1637,16 @@ _render_bottom_bar()
 
 # Pipeline indicator (bottom)
 st.markdown(pipeline_indicator_html(5 if st.session_state.get("last_det") or st.session_state.get("last_batch_results") else 1), unsafe_allow_html=True)
+
+# One-time startup log — proves the logging pipeline works even before any inference
+if not st.session_state.get("_logged_start"):
+    st.session_state["_logged_start"] = True
+    import platform as _pf
+    _cuda = False
+    try:
+        import torch as _t
+        _cuda = _t.cuda.is_available()
+    except Exception:
+        pass
+    _ffmpeg = "yes" if shutil.which("ffmpeg") else "NO"
+    _log(f"=== DASHBOARD START — {_pf.platform()} | Python {_pf.python_version()} | CUDA={_cuda} | ffmpeg={_ffmpeg} | log={LOG_FILE} ===")
