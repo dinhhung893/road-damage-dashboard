@@ -247,9 +247,15 @@ def annotate_image_pil(image: Image.Image, detection_result, show_labels: bool =
     """Draw bounding boxes + labels + legend on a PIL image. Returns new PIL image."""
     img = image.copy().convert("RGB")
     draw = ImageDraw.Draw(img)
-    try:
-        font = ImageFont.truetype("arial.ttf", max(12, img.height // 45))
-    except (OSError, IOError):
+    # Font fallback chain: Windows arial → Linux DejaVu → default
+    font = None
+    for font_path in ["arial.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf"]:
+        try:
+            font = ImageFont.truetype(font_path, max(12, img.height // 45))
+            break
+        except (OSError, IOError):
+            continue
+    if font is None:
         font = ImageFont.load_default()
     font_small = font
 
@@ -892,8 +898,16 @@ with tabs["tab_video"]:
                     out_fps = fps_target if fps_target > 0 else src_fps
 
                     out_path = tmp_video_path.with_suffix(".annotated.mp4")
-                    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                    out = cv2.VideoWriter(str(out_path), fourcc, out_fps, (w, h))
+                    # Codec fallback: avc1/H264 (browser-compatible) → mp4v (fallback)
+                    for codec in ["avc1", "H264", "mp4v"]:
+                        fourcc = cv2.VideoWriter_fourcc(*codec)
+                        out = cv2.VideoWriter(str(out_path), fourcc, out_fps, (w, h))
+                        if out.isOpened():
+                            break
+                    if not out.isOpened():
+                        st.error("❌ Không thể mở VideoWriter với bất kỳ codec nào (avc1/H264/mp4v).")
+                        cap.release()
+                        st.stop()
 
                     frame_idx = 0
                     processed = 0

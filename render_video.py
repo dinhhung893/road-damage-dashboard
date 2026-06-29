@@ -54,9 +54,16 @@ def render_video(
     if max_frames:
         print(f"Max frames cap: {max_frames}")
 
-    # Output writer — H.264 if available, fallback mp4v
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    out = cv2.VideoWriter(str(output_path), fourcc, fps, (w, h))
+    # Output writer — codec fallback: avc1/H264 (browser-compatible) → mp4v
+    out = None
+    for codec in ["avc1", "H264", "mp4v"]:
+        fourcc = cv2.VideoWriter_fourcc(*codec)
+        out = cv2.VideoWriter(str(output_path), fourcc, fps, (w, h))
+        if out.isOpened():
+            print(f"Video codec: {codec}")
+            break
+    if not out.isOpened():
+        raise RuntimeError(f"Cannot open VideoWriter with any codec (avc1/H264/mp4v) for {output_path}")
 
     frame_idx = 0
     processed = 0
