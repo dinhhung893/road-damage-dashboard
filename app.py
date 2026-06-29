@@ -1379,14 +1379,21 @@ def _render_console_section():
             # During processing, console is shown inline below video — skip here
             st.info("⏳ " + ("Console đang hiển thị dưới video" if st.session_state["lang"] == "vi" else "Console shown below video during processing"))
         else:
-            # Priority 2: log file (local + Colab)
-            log_sources = [Path("outputs/app.log"), eb._DUMPS_ROOT / "outputs" / "app.log",
-                          Path("/content/repo/outputs/app.log"), Path("/content/outputs/app.log")]
+            # Log file — read from /tmp first (outside Streamlit watch dir to prevent runOnSave loop),
+            # then fallback to repo paths. Filter watchdog noise.
+            log_sources = [
+                Path("/tmp/road_damage_app.log"),
+                Path(tempfile.gettempdir()) / "road_damage_app.log",
+                Path("outputs/app.log"),
+                eb._DUMPS_ROOT / "outputs" / "app.log",
+                Path("/content/repo/outputs/app.log"),
+            ]
             for lp in log_sources:
                 if lp.exists():
                     try:
                         content = lp.read_text(encoding="utf-8", errors="replace").splitlines()
-                        log_lines = content[-200:]
+                        log_lines = [l for l in content if "watchdog" not in l.lower() and "inotify" not in l.lower()]
+                        log_lines = log_lines[-200:]
                         break
                     except Exception:
                         pass
