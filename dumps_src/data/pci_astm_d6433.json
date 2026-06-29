@@ -1,0 +1,181 @@
+{
+  "_source": "ASTM D6433-07 (Standard Practice for Roads and Parking Lots Pavement Condition Index Surveys)",
+  "_reference_slides": "Tai_Lieu/Chuyen_Mon/Quan ly bao duong mat duong - Cac chi tieu danh gia - Slide 17-22",
+  "_note": "Deduct value curves được số hóa từ slide chuyên môn + tham chiếu chuẩn ASTM D6433-07. Cần verify với bản chính thức trước khi sử dụng cho đồ án.",
+
+  "sample_unit": {
+    "area_sqft": 5000,
+    "area_sqm": 464.5,
+    "description": "Đơn vị mẫu khảo sát (sample unit) theo ASTM D6433"
+  },
+
+  "pci_rating": {
+    "Good":          {"min": 85, "max": 100, "color": "#2ecc71"},
+    "Satisfactory":  {"min": 70, "max": 84,  "color": "#27ae60"},
+    "Fair":          {"min": 55, "max": 69,  "color": "#f1c40f"},
+    "Poor":          {"min": 40, "max": 54,  "color": "#e67e22"},
+    "Very Poor":     {"min": 25, "max": 39,  "color": "#e74c3c"},
+    "Failed":        {"min": 0,  "max": 24,  "color": "#c0392b"}
+  },
+
+  "distress_mapping": {
+    "D00": {
+      "name_vi": "Nứt dọc",
+      "name_en": "Longitudinal Cracking",
+      "astm_code": "09",
+      "severity_levels": ["Low", "Medium", "High"],
+      "severity_desc_vi": {
+        "Low": "Độ rộng < 6mm (1/4 inch)",
+        "Medium": "Độ rộng 6-19mm (1/4 - 3/4 inch) hoặc rạn nhẹ xung quanh",
+        "High": "Độ rộng > 19mm (3/4 inch) hoặc rạn nhiều xung quanh"
+      }
+    },
+    "D10": {
+      "name_vi": "Nứt ngang",
+      "name_en": "Transverse Cracking",
+      "astm_code": "09",
+      "severity_levels": ["Low", "Medium", "High"],
+      "severity_desc_vi": {
+        "Low": "Độ rộng < 6mm (1/4 inch)",
+        "Medium": "Độ rộng 6-19mm (1/4 - 3/4 inch) hoặc rạn nhẹ xung quanh",
+        "High": "Độ rộng > 19mm (3/4 inch) hoặc rạn nhiều xung quanh"
+      }
+    },
+    "D20": {
+      "name_vi": "Nứt da cá (nứt mạng lưới)",
+      "name_en": "Alligator Cracking",
+      "astm_code": "01",
+      "severity_levels": ["Low", "Medium", "High"],
+      "severity_desc_vi": {
+        "Low": "Mạng lưới nứt thưa, vết nứt chưa liên kết",
+        "Medium": "Mạng lưới nứt phát triển, tạo thành ô vuông nhỏ",
+        "High": "Nứt thành miếng vỡ rời rạc, có thể bong tróc"
+      }
+    },
+    "D40": {
+      "name_vi": "Ổ gà",
+      "name_en": "Potholes",
+      "astm_code": "13",
+      "severity_levels": ["Low", "Medium", "High"],
+      "severity_desc_vi": {
+        "Low": "Sâu < 25mm (1 inch), đường kính < 100mm",
+        "Medium": "Sâu 25-50mm (1-2 inch), đường kính 100-200mm",
+        "High": "Sâu > 50mm (2 inch), đường kính > 200mm"
+      }
+    }
+  },
+
+  "deduct_value_curves": {
+    "_description": "Mỗi curve là danh sách [density%, deduct_value]. Density = diện tích hư hỏng / diện tích mẫu × 100. Nội suy tuyến tính giữa các điểm.",
+    "D00": {
+      "Low":    [[0,0],[0.5,5],[1,10],[2,15],[5,22],[10,28],[20,33],[35,37],[50,40]],
+      "Medium": [[0,0],[0.5,10],[1,18],[2,26],[5,35],[10,42],[20,50],[35,57],[50,62]],
+      "High":   [[0,0],[0.5,15],[1,25],[2,35],[5,48],[10,58],[20,67],[35,75],[50,80]]
+    },
+    "D10": {
+      "Low":    [[0,0],[0.5,5],[1,10],[2,15],[5,22],[10,28],[20,33],[35,37],[50,40]],
+      "Medium": [[0,0],[0.5,10],[1,18],[2,26],[5,35],[10,42],[20,50],[35,57],[50,62]],
+      "High":   [[0,0],[0.5,15],[1,25],[2,35],[5,48],[10,58],[20,67],[35,75],[50,80]]
+    },
+    "D20": {
+      "Low":    [[0,0],[0.5,8],[1,14],[2,20],[5,28],[10,34],[20,40],[35,45],[50,48]],
+      "Medium": [[0,0],[0.5,15],[1,24],[2,33],[5,44],[10,52],[20,60],[35,67],[50,72]],
+      "High":   [[0,0],[0.5,22],[1,35],[2,47],[5,60],[10,70],[20,78],[35,85],[50,90]]
+    },
+    "D40": {
+      "Low":    [[0,0],[0.5,12],[1,20],[2,28],[5,38],[10,45],[20,52],[35,57],[50,60]],
+      "Medium": [[0,0],[0.5,20],[1,32],[2,42],[5,55],[10,63],[20,72],[35,78],[50,82]],
+      "High":   [[0,0],[0.5,28],[1,42],[2,55],[5,70],[10,80],[20,88],[35,93],[50,97]]
+    }
+  },
+
+  "cdv_correction": {
+    "_description": "Bảng hiệu chỉnh CDV (Corrected Deduct Value). q = số deduct values > 2. TDV = tổng deduct values. CDV được tra từ bảng. Khi q ≤ 1 thì CDV = TDV.",
+    "_source_note": "Số hóa từ Slide 21-22 của PPTX chuyên môn + ASTM D6433-07 Table 3",
+    "curves": {
+      "q1":  [[0,0],[5,5],[10,10],[15,15],[20,20],[25,25],[30,30],[35,35],[40,40],[45,45],[50,50],[55,55],[60,60],[65,65],[70,70],[75,75],[80,80],[85,85],[90,90],[95,95],[100,100]],
+      "q2":  [[0,0],[5,4],[10,8],[15,12],[20,16],[25,20],[30,24],[35,28],[40,32],[45,36],[50,40],[55,44],[60,48],[65,52],[70,56],[75,60],[80,64],[85,68],[90,72],[95,76],[100,80]],
+      "q3":  [[0,0],[5,3],[10,7],[15,10],[20,14],[25,17],[30,21],[35,24],[40,28],[45,31],[50,35],[55,38],[60,42],[65,46],[70,50],[75,54],[80,58],[85,62],[90,67],[95,72],[100,77]],
+      "q4":  [[0,0],[5,3],[10,6],[15,9],[20,12],[25,15],[30,18],[35,21],[40,24],[45,27],[50,30],[55,33],[60,37],[65,41],[70,46],[75,51],[80,56],[85,61],[90,66],[95,71],[100,76]],
+      "q5":  [[0,0],[5,2],[10,5],[15,7],[20,10],[25,12],[30,15],[35,18],[40,21],[45,24],[50,27],[55,30],[60,34],[65,38],[70,43],[75,48],[80,53],[85,58],[90,63],[95,68],[100,73]],
+      "q6":  [[0,0],[5,2],[10,4],[15,6],[20,8],[25,10],[30,13],[35,16],[40,19],[45,22],[50,25],[55,28],[60,32],[65,36],[70,41],[75,46],[80,51],[85,56],[90,61],[95,66],[100,71]],
+      "q7":  [[0,0],[5,1],[10,3],[15,5],[20,7],[25,9],[30,11],[35,14],[40,17],[45,20],[50,23],[55,26],[60,30],[65,34],[70,39],[75,44],[80,49],[85,54],[90,59],[95,64],[100,69]],
+      "q8":  [[0,0],[5,1],[10,3],[15,4],[20,6],[25,8],[30,10],[35,12],[40,15],[45,18],[50,21],[55,24],[60,28],[65,32],[70,37],[75,42],[80,47],[85,52],[90,57],[95,62],[100,67]],
+      "q9":  [[0,0],[5,1],[10,2],[15,4],[20,5],[25,7],[30,9],[35,11],[40,14],[45,17],[50,20],[55,23],[60,27],[65,31],[70,36],[75,41],[80,46],[85,51],[90,56],[95,61],[100,66]],
+      "q10": [[0,0],[5,1],[10,2],[15,3],[20,5],[25,6],[30,8],[35,10],[40,13],[45,16],[50,19],[55,22],[60,26],[65,30],[70,35],[75,40],[80,45],[85,50],[90,55],[95,60],[100,65]]
+    }
+  },
+
+  "severity_assignment": {
+    "_description": "Quy tắc gán mức độ nghiêm trọng (severity) cho từng loại hư hỏng khi chỉ có bounding box (không có segmentation mask). Dựa trên tỷ lệ diện tích bbox so với ảnh.",
+    "D00": {
+      "Low":    {"max_density_pct": 2,  "desc": "Vết nứt ngắn, diện tích nhỏ"},
+      "Medium": {"max_density_pct": 10, "desc": "Vết nứt trung bình"},
+      "High":   {"max_density_pct": 100, "desc": "Vết nứt dài, diện tích lớn"}
+    },
+    "D10": {
+      "Low":    {"max_density_pct": 2,  "desc": "Vết nứt ngắn, diện tích nhỏ"},
+      "Medium": {"max_density_pct": 10, "desc": "Vết nứt trung bình"},
+      "High":   {"max_density_pct": 100, "desc": "Vết nứt dài, diện tích lớn"}
+    },
+    "D20": {
+      "Low":    {"max_density_pct": 5,  "desc": "Mạng lưới thưa"},
+      "Medium": {"max_density_pct": 20, "desc": "Mạng lưới phát triển"},
+      "High":   {"max_density_pct": 100, "desc": "Miếng vỡ rời rạc"}
+    },
+    "D40": {
+      "Low":    {"max_density_pct": 1,  "desc": "Ổ gà nhỏ, nông"},
+      "Medium": {"max_density_pct": 5,  "desc": "Ổ gà trung bình"},
+      "High":   {"max_density_pct": 100, "desc": "Ổ gà lớn, sâu"}
+    }
+  },
+
+  "survey_procedure": {
+    "_source": "ASTM D6433-07 + Slide 16-19 PPTX chuyên môn",
+    "_description": "Quy trình khảo sát PCI từng bước theo chuẩn ASTM",
+    "steps": [
+      {"step": 1, "name": "Chia đoạn đường (section)", "desc": "Chia đường thành các đoạn có cùng cấu trúc, lưu lượng, điều kiện môi trường"},
+      {"step": 2, "name": "Chọn đoạn đại diện (sample unit)", "desc": "Trong mỗi section, chọn các sample unit đại diện (diện tích ~5000 ft² / 464.5 m²)"},
+      {"step": 3, "name": "Khảo sát hư hỏng", "desc": "Ghi nhận loại hư hỏng, mức độ nghiêm trọng, diện tích/chiều dài cho mỗi sample unit"},
+      {"step": 4, "name": "Tính damage density", "desc": "Density = diện tích hư hỏng / diện tích sample unit × 100 (%)"},
+      {"step": 5, "name": "Tra deduct value", "desc": "Dựa vào density + severity → tra deduct value từ curves"},
+      {"step": 6, "name": "Tính CDV", "desc": "Tính TDV (tổng deduct values), đếm q (số DV > 2), tra CDV từ bảng hiệu chỉnh"},
+      {"step": 7, "name": "Tính PCI sample unit", "desc": "PCI = 100 - CDV"},
+      {"step": 8, "name": "Tính PCI section", "desc": "PCI section = trung bình có trọng số PCI các sample unit"},
+      {"step": 9, "name": "Phân loại rating", "desc": "PCI 0-100 → Good/Satisfactory/Fair/Poor/Very Poor/Failed"}
+    ]
+  },
+
+  "maintenance_recommendation": {
+    "_source": "Slide 26 PPTX chuyên môn",
+    "_description": "Khuyến nghị bảo dưỡng dựa trên PCI rating (theo ASTM D6433)",
+    "Good":          {"action": "Bảo dưỡng định kỳ (routine maintenance)", "detail": "Chỉ cần theo dõi, không cần can thiệp ngay"},
+    "Satisfactory":  {"action": "Bảo dưỡng phòng ngừa (preventive maintenance)", "detail": "Phủ seal coat, chip seal, slurry seal"},
+    "Fair":           {"action": "Sửa chữa trung bình (corrective maintenance)", "detail": "Phủ lớp mỏng (overlay), vá từng điểm (patching)"},
+    "Poor":           {"action": "Sửa chữa lớn (major rehabilitation)", "detail": "Phủ lớp dày (thick overlay), tái chế mặt (milling + overlay)"},
+    "Very Poor":      {"action": "Tái cấu trúc (reconstruction)", "detail": "Phá bỏ lớp mặt, tái cấu trúc toàn bộ"},
+    "Failed":         {"action": "Xây mới (new construction)", "detail": "Phá bỏ hoàn toàn, xây mới từ nền"}
+  },
+
+  "other_standards_reference": {
+    "_from_slides": "Các tiêu chuẩn khác được đề cập trong slide chuyên môn (Slide 23-31, 33-50)",
+    "china_standard": {
+      "formula": "PCI = C - Σ a(Ti, Sj, Dij) × F(t, d)",
+      "description": "Tiêu chuẩn Trung Quốc - có bảng điểm khấu trừ riêng (Slide 23-26)"
+    },
+    "vizir_index": {
+      "origin": "Pháp",
+      "distress_types": ["Nứt dọc", "Lún vệt bánh xe", "Nứt da cá", "Miếng vá", "Ổ gà", "Lớp vá láng", "Nứt ngang", "Xói mòn viền"],
+      "severity_levels": 3,
+      "reference": "Slide 30-31"
+    },
+    "surface_condition_index": {
+      "formula_CIsurf": "(C + R) / 15",
+      "formula_CIStruct": "A / 5",
+      "C": "Diện tích vết nứt (%)",
+      "R": "Diện tích bong bật/bong tróc (%)",
+      "A": "Chiều sâu vệt lún trung bình (mm)",
+      "reference": "Slide 27-28"
+    }
+  }
+}
