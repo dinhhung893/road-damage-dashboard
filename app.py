@@ -374,7 +374,7 @@ _ss.setdefault("device", "cpu")
 _ss.setdefault("use_segmentation", False)
 _ss.setdefault("show_legend", True)
 _ss.setdefault("video_stride", 5)
-_ss.setdefault("video_max", 30)
+_ss.setdefault("video_max", 0)
 _ss.setdefault("video_overlay", True)
 _ss.setdefault("video_fps", 0)
 # Results (state lock)
@@ -1028,7 +1028,10 @@ def _do_process_video():
     w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     stride = st.session_state["video_stride"]
     max_f = st.session_state["video_max"]
-    out_path = Path(tempfile.gettempdir()) / "annotated_video.mp4"
+    # Output path — use /content on Colab (faster than /tmp), or local outputs/
+    out_dir = "/content" if os.path.isdir("/content") else str(Path.cwd() / "outputs")
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    out_path = Path(out_dir) / "annotated_video.mp4"
     out = None
     for codec in ["avc1", "H264", "mp4v"]:
         fourcc = cv2.VideoWriter_fourcc(*codec)
@@ -1043,7 +1046,9 @@ def _do_process_video():
     st.session_state["is_processing"] = True
 
     # Calculate max frames BEFORE rendering progress (needed for ETA display)
-    max_proc = max_f if max_f > 0 else total // stride
+    max_proc = max_f if max_f > 0 else (total // stride if stride > 0 else total)
+    if max_proc <= 0:
+        max_proc = total  # fallback: process all
 
     # Progress + Console — single column below video (compact, no warning column)
     progress_container = st.container()
@@ -1177,11 +1182,13 @@ def _render_results():
                 st.line_chart(df.set_index("frame")["pci"])
             with col_table:
                 st.dataframe(df, use_container_width=True, hide_index=True)
-            # Downloads
+            # Downloads — use file path (Streamlit handles streaming, faster than bytes)
             c1, c2 = st.columns(2)
             with c1:
-                with open(st.session_state["last_video_annotated"], "rb") as f:
-                    st.download_button("📥 Video MP4", f.read(), file_name="annotated.mp4", mime="video/mp4")
+                ann_path = st.session_state["last_video_annotated"]
+                if ann_path and Path(ann_path).exists():
+                    st.download_button("📥 Video MP4", data=open(ann_path, "rb").read(),
+                                       file_name="annotated.mp4", mime="video/mp4")
             with c2:
                 st.download_button("📥 PCI CSV", df.to_csv(index=False).encode("utf-8"), file_name="pci_timeseries.csv", mime="text/csv")
         pipeline_indicator_html(5)
