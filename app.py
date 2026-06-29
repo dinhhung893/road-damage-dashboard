@@ -657,36 +657,20 @@ def _drive_thumbnail_grid(files: list[dict], file_type: str, key_suffix: str, mu
     selected_paths = []
     for idx, f in enumerate(file_items):
         with cols[idx % n_cols]:
-            try:
-                if file_type == "video":
-                    # Video thumbnail — fast: just read first frame, timeout 3s
-                    cap = cv2.VideoCapture(f["path"])
-                    # Set timeout-ish: only try 1 read, don't seek
-                    ret, frame = cap.read()
-                    cap.release()
-                    if ret:
-                        thumb = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                        thumb.thumbnail((150, 150))
-                        st.image(thumb, width=150)
-                    else:
-                        st.markdown("🎬")
-                elif file_type == "image" or file_type == "batch":
-                    # Image thumbnail — fast
-                    thumb = Image.open(f["path"])
-                    thumb.thumbnail((150, 150))
-                    st.image(thumb, width=150)
-                else:
-                    st.markdown("📄")
-            except Exception as e:
-                # Fallback: show icon instead of crashing/hanging
-                st.markdown("🎬" if file_type == "video" else "�️")
-            st.caption(f"**{f['name'][:18]}**{'…' if len(f['name']) > 18 else ''}\n{_format_size(f['size'])}")
-            if multi:
-                if st.checkbox("✓", key=f"fsel_{key_suffix}_{idx}", value=False):
-                    selected_paths.append(f["path"])
+            # NO thumbnail - cv2.VideoCapture and PIL.open HANG on Drive FUSE
+            # Just show file type label + name + size (instant, zero I/O)
+            if file_type == 'video':
+                st.markdown('**[VIDEO]**')
             else:
-                if st.button("✓", key=f"fsel_{key_suffix}_{idx}", help=f["name"]):
-                    return f["path"]
+                st.markdown('**[IMAGE]**')
+            st.caption(f"**{f['name'][:18]}**{'...' if len(f['name']) > 18 else ''}
+{_format_size(f['size'])}")
+            if multi:
+                if st.checkbox('Select', key=f'fsel_{key_suffix}_{idx}', value=False):
+                    selected_paths.append(f['path'])
+            else:
+                if st.button('Select', key=f'fsel_{key_suffix}_{idx}', help=f['name']):
+                    return f['path']
     return selected_paths if multi else None
 
 
