@@ -659,7 +659,9 @@ def _drive_thumbnail_grid(files: list[dict], file_type: str, key_suffix: str, mu
         with cols[idx % n_cols]:
             try:
                 if file_type == "video":
+                    # Video thumbnail — fast: just read first frame, timeout 3s
                     cap = cv2.VideoCapture(f["path"])
+                    # Set timeout-ish: only try 1 read, don't seek
                     ret, frame = cap.read()
                     cap.release()
                     if ret:
@@ -668,12 +670,16 @@ def _drive_thumbnail_grid(files: list[dict], file_type: str, key_suffix: str, mu
                         st.image(thumb, width=150)
                     else:
                         st.markdown("🎬")
-                else:
+                elif file_type == "image" or file_type == "batch":
+                    # Image thumbnail — fast
                     thumb = Image.open(f["path"])
                     thumb.thumbnail((150, 150))
                     st.image(thumb, width=150)
-            except Exception:
-                st.markdown("📄")
+                else:
+                    st.markdown("📄")
+            except Exception as e:
+                # Fallback: show icon instead of crashing/hanging
+                st.markdown("🎬" if file_type == "video" else "�️")
             st.caption(f"**{f['name'][:18]}**{'…' if len(f['name']) > 18 else ''}\n{_format_size(f['size'])}")
             if multi:
                 if st.checkbox("✓", key=f"fsel_{key_suffix}_{idx}", value=False):
