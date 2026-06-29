@@ -390,6 +390,120 @@ def _list_drive_videos(folder_path: str) -> list[str]:
     return sorted([str(f) for f in p.iterdir() if f.suffix.lower() in exts])
 
 
+def _list_drive_subdirs(folder_path: str) -> list[str]:
+    """List subdirectories in a Drive folder (for folder tree navigation)."""
+    p = Path(folder_path)
+    if not p.exists() or not p.is_dir():
+        return []
+    return sorted([str(f) for f in p.iterdir() if f.is_dir() and not f.name.startswith(".")])
+
+
+def _list_drive_all_files(folder_path: str, file_type: str = "image") -> list[dict]:
+    """List files of given type with metadata (name, path, size, is_dir)."""
+    p = Path(folder_path)
+    if not p.exists() or not p.is_dir():
+        return []
+    img_exts = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
+    vid_exts = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
+    exts = vid_exts if file_type == "video" else img_exts
+    all_exts = img_exts | vid_exts if file_type == "batch" else exts
+    files = []
+    for f in sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+        if f.is_dir() and not f.name.startswith("."):
+            files.append({"name": f.name, "path": str(f), "size": 0, "is_dir": True})
+        elif f.is_file() and f.suffix.lower() in all_exts:
+            try:
+                size = f.stat().st_size
+            except Exception:
+                size = 0
+            files.append({"name": f.name, "path": str(f), "size": size, "is_dir": False})
+    return files
+
+
+def _format_size(size_bytes: int) -> str:
+    """Format file size human-readable."""
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    elif size_bytes < 1024 * 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.1f} MB"
+    else:
+        return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
+
+
+def _drive_breadcrumb(current_path: str, key_suffix: str = "") -> str:
+    """Render clickable breadcrumb navigation for Drive path. Returns selected path."""
+    parts = Path(current_path).parts
+    breadcrumbs = []
+    for i in range(len(parts)):
+        partial = str(Path(*parts[:i+1]))
+        breadcrumbs.append((parts[i], partial))
+
+    cols = st.columns(len(breadcrumbs))
+    selected = current_path
+    for i, (name, path) in enumerate(breadcrumbs):
+        with cols[i]:
+            label = "🏠" if name == "/" else (name[:15] + "…" if len(name) > 15 else name)
+            if st.button(label, key=f"bc_{key_suffix}_{i}_{path}", help=path, use_container_width=True):
+                selected = path
+    return selected
+
+
+def _drive_file_grid(files: list[dict], file_type: str, key_suffix: str, multi: bool = False) -> str | list[str] | None:
+    """Render file grid with thumbnails. Returns selected file path(s)."""
+    is_vi = st.session_state["lang"] == "vi"
+    file_items = [f for f in files if not f["is_dir"]]
+
+    if not file_items:
+        st.info(f"📭 {('Không có file phù hợp trong thư mục này' if is_vi else 'No matching files in this folder')}")
+        return None if not multi else []
+
+    # Thumbnail grid — 4 columns
+    n_cols = min(4, len(file_items))
+    cols = st.columns(n_cols)
+    selected_paths = []
+
+    for idx, f in enumerate(file_items):
+        with cols[idx % n_cols]:
+            # Thumbnail
+            try:
+                if file_type == "video":
+                    # Video: show first frame as thumbnail
+                    cap = cv2.VideoCapture(f["path"])
+                    ret, frame = cap.read()
+                    cap.release()
+                    if ret:
+                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        thumb = Image.fromarray(frame_rgb)
+                        thumb.thumbnail((150, 150))
+                        st.image(thumb, use_column_width=True)
+                    else:
+                        st.markdown("🎬")
+                else:
+                    # Image: show thumbnail
+                    thumb = Image.open(f["path"])
+                    thumb.thumbnail((150, 150))
+                    st.image(thumb, use_column_width=True)
+            except Exception:
+                st.markdown("📄")
+
+            # File info
+            st.caption(f"**{f['name'][:20]}**{'…' if len(f['name']) > 20 else ''}\n{_format_size(f['size'])}")
+
+            # Select button
+            if multi:
+                if st.checkbox("Select", key=f"fsel_{key_suffix}_{idx}", value=False):
+                    selected_paths.append(f["path"])
+            else:
+                if st.button("✓", key=f"fsel_{key_suffix}_{idx}", help=f["name"]):
+                    return f["path"]
+
+    if multi:
+        return selected_paths
+    return None
+
+
 def _is_colab() -> bool:
     """Check if running on Colab (Linux + /content exists). Drive may not be mounted yet."""
     import os as _os
@@ -480,56 +594,63 @@ def _source_selector(key_suffix: str = "", file_type: str = "image") -> tuple[st
             ))
             st.code("from google.colab import drive\ndrive.mount('/content/drive')", language="python")
         else:
-            # Drive mounted — show folder browser
-            default_path = "/content/drive/MyDrive"
-            drive_path = st.text_input(
-                "Đường dẫn thư mục Drive" if is_vi else "Drive folder path",
-                value=default_path,
-                key=f"drv_{key_suffix}",
-            )
+            # Drive mounted — folder tree browser with breadcrumb + thumbnails
+            ss_key = f"drive_path_{key_suffix}"
+            if ss_key not in st.session_state:
+                st.session_state[ss_key] = "/content/drive/MyDrive"
+
+            current_path = st.session_state[ss_key]
+
+            # Breadcrumb navigation (clickable path segments)
+            new_path = _drive_breadcrumb(current_path, key_suffix)
+            if new_path != current_path:
+                st.session_state[ss_key] = new_path
+                current_path = new_path
+                st.rerun()
+
+            # Subdirectory navigation (folder list)
+            subdirs = _list_drive_subdirs(current_path)
+            if subdirs:
+                st.markdown("**" + ("📁 Thư mục con:" if is_vi else "📁 Subfolders:") + "**")
+                dir_cols = st.columns(min(5, len(subdirs)))
+                for idx, sd in enumerate(subdirs):
+                    with dir_cols[idx % len(dir_cols)]:
+                        sd_name = Path(sd).name
+                        if st.button(f"📂 {sd_name[:15]}{'…' if len(sd_name) > 15 else ''}",
+                                     key=f"dir_{key_suffix}_{idx}", help=sd, use_container_width=True):
+                            st.session_state[ss_key] = sd
+                            st.rerun()
+
+            # Manual path input (advanced)
+            with st.expander("� " + ("Nhập đường dẫn trực tiếp" if is_vi else "Enter path directly"), expanded=False):
+                manual_path = st.text_input("Path", value=current_path, key=f"manual_{key_suffix}")
+                if st.button("→", key=f"go_{key_suffix}") and manual_path != current_path:
+                    if Path(manual_path).exists():
+                        st.session_state[ss_key] = manual_path
+                        st.rerun()
+                    else:
+                        st.error("❌ " + ("Đường dẫn không tồn tại" if is_vi else "Path does not exist"))
+
+            # File grid with thumbnails
+            st.markdown(f"**� {('Files trong' if is_vi else 'Files in')} `{Path(current_path).name}`:**")
+            all_files = _list_drive_all_files(current_path, file_type)
+
             if file_type == "batch":
-                files = _list_drive_images(drive_path)
-                if files:
-                    selected = st.multiselect(
-                        f"Chọn ảnh ({len(files)} tìm thấy)" if is_vi else f"Select images ({len(files)} found)",
-                        options=files,
-                        format_func=lambda x: Path(x).name,
-                        key=f"drv_sel_{key_suffix}",
-                    )
-                    if selected:
-                        file_path = selected  # list of paths for batch
-                        file_name = f"drive_batch_{len(selected)}"
-                else:
-                    st.info(f"📭 {('Không có ảnh trong' if is_vi else 'No images in')} {drive_path}")
+                selected_files = _drive_file_grid(all_files, "image", key_suffix, multi=True)
+                if selected_files:
+                    file_path = selected_files
+                    file_name = f"drive_batch_{len(selected_files)}"
             elif file_type == "video":
-                files = _list_drive_videos(drive_path)
-                if files:
-                    selected = st.selectbox(
-                        f"Chọn video ({len(files)})" if is_vi else f"Select video ({len(files)})",
-                        options=[""] + files,
-                        format_func=lambda x: Path(x).name if x else f"— {('chọn' if is_vi else 'select')} —",
-                        key=f"drv_sel_{key_suffix}",
-                    )
-                    if selected:
-                        file_path = Path(selected)
-                        file_name = Path(selected).name
-                else:
-                    st.info(f"📭 {('Không có video trong' if is_vi else 'No videos in')} {drive_path}")
+                selected = _drive_file_grid(all_files, "video", key_suffix, multi=False)
+                if selected:
+                    file_path = Path(selected)
+                    file_name = Path(selected).name
             else:  # image
-                files = _list_drive_images(drive_path)
-                if files:
-                    selected = st.selectbox(
-                        f"Chọn ảnh ({len(files)})" if is_vi else f"Select image ({len(files)})",
-                        options=[""] + files,
-                        format_func=lambda x: Path(x).name if x else f"— {('chọn' if is_vi else 'select')} —",
-                        key=f"drv_sel_{key_suffix}",
-                    )
-                    if selected:
-                        file_path = Path(selected)
-                        file_name = Path(selected).name
-                        pil_img = Image.open(file_path)
-                else:
-                    st.info(f"📭 {('Không có ảnh trong' if is_vi else 'No images in')} {drive_path}")
+                selected = _drive_file_grid(all_files, "image", key_suffix, multi=False)
+                if selected:
+                    file_path = Path(selected)
+                    file_name = Path(selected).name
+                    pil_img = Image.open(file_path)
 
     return source, file_path, pil_img, file_name
 
