@@ -663,8 +663,7 @@ def _drive_thumbnail_grid(files: list[dict], file_type: str, key_suffix: str, mu
                 st.markdown('**[VIDEO]**')
             else:
                 st.markdown('**[IMAGE]**')
-            st.caption(f"**{f['name'][:18]}**{'...' if len(f['name']) > 18 else ''}
-{_format_size(f['size'])}")
+            st.caption(f"**{f['name'][:18]}**{'...' if len(f['name']) > 18 else ''} | {_format_size(f['size'])}")
             if multi:
                 if st.checkbox('Select', key=f'fsel_{key_suffix}_{idx}', value=False):
                     selected_paths.append(f['path'])
