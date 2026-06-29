@@ -358,6 +358,168 @@ def preflight_check() -> tuple[bool, list[str]]:
 
 
 # =============================================================================
+# Source input helpers — Upload / Google Drive / URL direct
+# =============================================================================
+def _download_from_url(url: str, suffix: str = ".jpg") -> Path:
+    """Download file from URL to temp file. Returns path."""
+    import urllib.request
+    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    try:
+        urllib.request.urlretrieve(url, tmp.name)
+        return Path(tmp.name)
+    except Exception as e:
+        Path(tmp.name).unlink(missing_ok=True)
+        raise RuntimeError(f"URL download failed: {e}")
+
+
+def _list_drive_images(folder_path: str) -> list[str]:
+    """List image files in a Google Drive mounted folder (Colab: /content/drive/MyDrive/...)."""
+    p = Path(folder_path)
+    if not p.exists():
+        return []
+    exts = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
+    return sorted([str(f) for f in p.iterdir() if f.suffix.lower() in exts])
+
+
+def _list_drive_videos(folder_path: str) -> list[str]:
+    """List video files in a Google Drive mounted folder."""
+    p = Path(folder_path)
+    if not p.exists():
+        return []
+    exts = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
+    return sorted([str(f) for f in p.iterdir() if f.suffix.lower() in exts])
+
+
+def _is_colab() -> bool:
+    """Check if running on Colab (Linux + /content exists)."""
+    import os as _os
+    return _os.path.isdir("/content") and _os.path.exists("/content/drive")
+
+
+def _source_selector(key_suffix: str = "", file_type: str = "image") -> tuple[str, Path | None, Image.Image | None, str]:
+    """Render source input selector. Returns (source_label, file_path, pil_image, file_name).
+    file_type: 'image' or 'video' or 'batch'
+    """
+    lang = st.session_state["lang"]
+    is_vi = lang == "vi"
+
+    source_options = {
+        "upload": "📤 " + ("Tải lên" if is_vi else "Upload"),
+        "url": "🔗 " + ("URL trực tiếp" if is_vi else "Direct URL"),
+        "drive": "📁 " + ("Google Drive" if is_vi else "Google Drive"),
+    }
+    source = st.radio(
+        "Nguồn đầu vào" if is_vi else "Input source",
+        options=list(source_options.keys()),
+        format_func=lambda x: source_options[x],
+        horizontal=True,
+        key=f"src_{key_suffix}",
+    )
+
+    file_path = None
+    pil_img = None
+    file_name = ""
+
+    if source == "upload":
+        if file_type == "image":
+            uploaded = st.file_uploader(
+                "Tải lên ảnh (jpg, png, bmp, tiff, webp)" if is_vi else "Upload image",
+                type=["jpg", "jpeg", "png", "bmp", "tiff", "webp"],
+                key=f"up_img_{key_suffix}",
+            )
+            if uploaded:
+                pil_img = Image.open(uploaded)
+                tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+                pil_img.convert("RGB").save(tmp.name, "JPEG")
+                file_path = Path(tmp.name)
+                file_name = uploaded.name
+        elif file_type == "video":
+            uploaded = st.file_uploader(
+                "Tải lên video (mp4, avi, mov)" if is_vi else "Upload video",
+                type=["mp4", "avi", "mov", "mkv", "webm"],
+                key=f"up_vid_{key_suffix}",
+            )
+            if uploaded:
+                tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+                tmp.write(uploaded.read())
+                file_path = Path(tmp.name)
+                file_name = uploaded.name
+
+    elif source == "url":
+        url = st.text_input(
+            "URL (https://...)" if is_vi else "URL",
+            placeholder="https://example.com/road.jpg",
+            key=f"url_{key_suffix}",
+        )
+        if url:
+            suffix = ".mp4" if file_type == "video" else ".jpg"
+            try:
+                file_path = _download_from_url(url, suffix=suffix)
+                file_name = url.split("/")[-1][:50] or "url_input"
+                if file_type == "image":
+                    pil_img = Image.open(file_path)
+                st.success(f"✓ {('Đã tải' if is_vi else 'Downloaded')}: {file_name}")
+            except Exception as e:
+                st.error(f"❌ {e}")
+
+    elif source == "drive":
+        if not _is_colab():
+            st.warning("⚠️ " + ("Google Drive chỉ khả dụng trên Colab. Mount Drive trước (from google.colab import drive; drive.mount('/content/drive'))." if is_vi else "Google Drive only on Colab. Mount first."))
+        else:
+            default_path = "/content/drive/MyDrive" if is_vi else "/content/drive/MyDrive"
+            drive_path = st.text_input(
+                "Đường dẫn thư mục Drive" if is_vi else "Drive folder path",
+                value=default_path,
+                key=f"drv_{key_suffix}",
+            )
+            if file_type == "batch":
+                files = _list_drive_images(drive_path)
+                if files:
+                    selected = st.multiselect(
+                        f"Chọn ảnh ({len(files)} tìm thấy)" if is_vi else f"Select images ({len(files)} found)",
+                        options=files,
+                        format_func=lambda x: Path(x).name,
+                        key=f"drv_sel_{key_suffix}",
+                    )
+                    if selected:
+                        file_path = selected  # list of paths for batch
+                        file_name = f"drive_batch_{len(selected)}"
+                else:
+                    st.info(f"📭 {('Không có ảnh trong' if is_vi else 'No images in')} {drive_path}")
+            elif file_type == "video":
+                files = _list_drive_videos(drive_path)
+                if files:
+                    selected = st.selectbox(
+                        f"Chọn video ({len(files)})" if is_vi else f"Select video ({len(files)})",
+                        options=[""] + files,
+                        format_func=lambda x: Path(x).name if x else f"— {('chọn' if is_vi else 'select')} —",
+                        key=f"drv_sel_{key_suffix}",
+                    )
+                    if selected:
+                        file_path = Path(selected)
+                        file_name = Path(selected).name
+                else:
+                    st.info(f"📭 {('Không có video trong' if is_vi else 'No videos in')} {drive_path}")
+            else:  # image
+                files = _list_drive_images(drive_path)
+                if files:
+                    selected = st.selectbox(
+                        f"Chọn ảnh ({len(files)})" if is_vi else f"Select image ({len(files)})",
+                        options=[""] + files,
+                        format_func=lambda x: Path(x).name if x else f"— {('chọn' if is_vi else 'select')} —",
+                        key=f"drv_sel_{key_suffix}",
+                    )
+                    if selected:
+                        file_path = Path(selected)
+                        file_name = Path(selected).name
+                        pil_img = Image.open(file_path)
+                else:
+                    st.info(f"📭 {('Không có ảnh trong' if is_vi else 'No images in')} {drive_path}")
+
+    return source, file_path, pil_img, file_name
+
+
+# =============================================================================
 # Detection runner — central inference with PCI + history persistence
 # =============================================================================
 def run_inference(image_path, source: str, file_name: str, do_segmentation: bool = False):
@@ -526,52 +688,21 @@ with tabs["tab_image"]:
     st.markdown("### " + ("Phân tích ảnh đơn" if st.session_state["lang"] == "vi" else "Single image analysis"))
     pipeline_indicator(1)
 
-    col_up, col_sample = st.columns([3, 2])
-    with col_up:
-        uploaded = st.file_uploader(
-            "Tải lên ảnh mặt đường (jpg, png, bmp, tiff)" if st.session_state["lang"] == "vi" else "Upload road image",
-            type=["jpg", "jpeg", "png", "bmp", "tiff", "webp"],
-            key="single_image",
-        )
-        # Clipboard paste (Tiện ích pillar — accept pasted image)
-        pasted = st.text_input(
-            "Hoặc dán ảnh từ clipboard (Base64, bỏ trống nếu không)" if st.session_state["lang"] == "vi" else "Or paste Base64 image",
-            key="paste_image",
-            placeholder="data:image/png;base64,...",
-        )
+    # Source selector: Upload / URL / Google Drive + sample picker
+    src_source, input_path, input_pil, src_name = _source_selector("single", file_type="image")
 
-    with col_sample:
+    # Sample picker (always available — from dumps/data/samples)
+    if input_path is None:
         st.markdown("**" + ("Hoặc chọn ảnh mẫu:" if st.session_state["lang"] == "vi" else "Or pick a sample:") + "**")
         sample_files = sorted(eb.DUMPS_SAMPLES.glob("*.jpg")) if eb.DUMPS_SAMPLES.exists() else []
         sample_options = {f.name: f for f in sample_files}
         opts = ["(chọn ...)"] + list(sample_options.keys()) if sample_options else ["(không có ảnh mẫu)"]
-        selected_sample = st.selectbox("Ảnh mẫu", options=opts, label_visibility="collapsed")
-
-    # Determine input
-    input_path = None
-    input_pil = None
-    if uploaded is not None:
-        input_pil = Image.open(uploaded)
-        tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
-        input_pil.convert("RGB").save(tmp.name, "JPEG")
-        input_path = Path(tmp.name)
-        src_name = uploaded.name
-    elif pasted and pasted.startswith("data:image"):
-        try:
-            b64 = pasted.split(",", 1)[1]
-            import base64
-            input_pil = Image.open(io.BytesIO(base64.b64decode(b64)))
-            tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
-            input_pil.convert("RGB").save(tmp.name, "JPEG")
-            input_path = Path(tmp.name)
-            src_name = "clipboard_paste.jpg"
-        except Exception as e:
-            st.error(f"Lỗi decode clipboard: {e}")
-            src_name = ""
-    elif selected_sample and selected_sample not in ("(chọn ...)", "(không có ảnh mẫu)"):
-        input_path = sample_options[selected_sample]
-        input_pil = Image.open(input_path)
-        src_name = selected_sample
+        selected_sample = st.selectbox("Ảnh mẫu", options=opts, label_visibility="collapsed", key="sample_single")
+        if selected_sample and selected_sample not in ("(chọn ...)", "(không có ảnh mẫu)"):
+            input_path = sample_options[selected_sample]
+            input_pil = Image.open(input_path)
+            src_name = selected_sample
+            src_source = "sample"
 
     if input_path is not None and input_pil is not None:
         pipeline_indicator(2)
@@ -709,15 +840,27 @@ with tabs["tab_batch"]:
     ))
     pipeline_indicator(1)
 
-    batch_files = st.file_uploader(
-        "Tải lên nhiều ảnh" if st.session_state["lang"] == "vi" else "Upload multiple images",
-        type=["jpg", "jpeg", "png", "bmp", "tiff"],
-        accept_multiple_files=True,
-        key="batch_images",
-    )
+    # Source selector for batch: Upload / URL / Google Drive folder
+    batch_source, batch_path, _, _ = _source_selector("batch", file_type="batch")
+    batch_files = None  # upload file objects
+    batch_drive_paths = None  # drive file paths (list)
 
-    if batch_files:
-        st.info(f"📋 {len(batch_files)} " + ("ảnh đã chọn" if st.session_state["lang"] == "vi" else "images selected"))
+    if batch_source == "upload":
+        batch_files = st.file_uploader(
+            "Tải lên nhiều ảnh" if st.session_state["lang"] == "vi" else "Upload multiple images",
+            type=["jpg", "jpeg", "png", "bmp", "tiff"],
+            accept_multiple_files=True,
+            key="batch_images",
+        )
+        batch_count = len(batch_files) if batch_files else 0
+    elif batch_source == "drive" and isinstance(batch_path, list):
+        batch_drive_paths = batch_path
+        batch_count = len(batch_path)
+    else:
+        batch_count = 0
+
+    if batch_count > 0:
+        st.info(f"📋 {batch_count} " + ("ảnh đã chọn" if st.session_state["lang"] == "vi" else "images selected"))
         col_run, col_clear, col_stride = st.columns([2, 1, 2])
         with col_run:
             run_batch = st.button("🚀 " + ("Chạy batch inference" if st.session_state["lang"] == "vi" else "Run batch"), type="primary")
@@ -726,21 +869,32 @@ with tabs["tab_batch"]:
 
         if run_batch:
             pipeline_indicator(2)
-            files_to_process = batch_files[:batch_max] if batch_max > 0 else batch_files
-            # PERF-01 — Optimistic UI: show skeleton placeholders before processing
-            skeleton = st.empty()
-            skeleton.info(f"⏳ {len(files_to_process)} " + ("ảnh đang xử lý. Kết quả sẽ hiện ở dưới." if st.session_state["lang"] == "vi" else "images queued. Results below."))
-            progress = st.progress(0.0, text="Đang xử lý...")
-            results = []
-            # PERF-03 — Batch prefetch: pre-load+convert all images first (concurrent with first inference)
-            st.caption("⚡ " + ("Prefetch: đang tải ảnh trước..." if st.session_state["lang"] == "vi" else "Prefetching images..."))
+            # Build unified file list: (name, path, pil_image) from upload or drive
             preloaded = []
-            for f in files_to_process:
-                img = Image.open(f)
-                tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
-                img.convert("RGB").save(tmp.name, "JPEG")
-                preloaded.append((f.name, Path(tmp.name), img))
+            if batch_files:  # upload source
+                files_to_process = batch_files[:batch_max] if batch_max > 0 else batch_files
+                skeleton = st.empty()
+                skeleton.info(f"⏳ {len(files_to_process)} " + ("ảnh đang xử lý." if st.session_state["lang"] == "vi" else "images queued."))
+                progress = st.progress(0.0, text="Đang xử lý...")
+                st.caption("⚡ " + ("Prefetch: đang tải ảnh trước..." if st.session_state["lang"] == "vi" else "Prefetching..."))
+                for f in files_to_process:
+                    img = Image.open(f)
+                    tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+                    img.convert("RGB").save(tmp.name, "JPEG")
+                    preloaded.append((f.name, Path(tmp.name), img))
+            elif batch_drive_paths:  # drive source
+                files_to_process = batch_drive_paths[:batch_max] if batch_max > 0 else batch_drive_paths
+                skeleton = st.empty()
+                skeleton.info(f"⏳ {len(files_to_process)} " + ("ảnh đang xử lý." if st.session_state["lang"] == "vi" else "images queued."))
+                progress = st.progress(0.0, text="Đang xử lý...")
+                for fp in files_to_process:
+                    img = Image.open(fp)
+                    preloaded.append((Path(fp).name, Path(fp), img))
+            else:
+                st.error("❌ " + ("Không có ảnh nào được chọn." if st.session_state["lang"] == "vi" else "No images selected."))
+                st.stop()
             skeleton.empty()
+            results = []
             for i, (fname, tmp_path, img) in enumerate(preloaded):
                 try:
                     det_res, pci_res, _ = run_inference(tmp_path, "batch", fname)
@@ -843,7 +997,7 @@ with tabs["tab_batch"]:
                             st.session_state["batch_nav_idx"] = idx
                             st.rerun()
     else:
-        st.info("👆 " + ("Tải lên nhiều ảnh để chạy batch." if st.session_state["lang"] == "vi" else "Upload multiple images to run batch."))
+        st.info("👆 " + ("Chọn nguồn ảnh (Upload / URL / Drive) để chạy batch." if st.session_state["lang"] == "vi" else "Select image source (Upload / URL / Drive) to run batch."))
 
 
 # (Remaining tabs: video, stream, report, history, settings, about — next edits)
@@ -862,18 +1016,12 @@ with tabs["tab_video"]:
     ))
     pipeline_indicator(1)
 
-    video_file = st.file_uploader(
-        "Tải lên video (mp4, avi, mov)" if st.session_state["lang"] == "vi" else "Upload video",
-        type=["mp4", "avi", "mov", "mkv", "webm"],
-        key="video_upload",
-    )
+    # Source selector for video: Upload / URL / Google Drive
+    vid_source, tmp_video_path, _, vid_name = _source_selector("video", file_type="video")
 
     col_v1, col_v2 = st.columns([2, 1])
     with col_v1:
-        if video_file is not None:
-            tmp_video = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
-            tmp_video.write(video_file.read())
-            tmp_video_path = Path(tmp_video.name)
+        if tmp_video_path is not None and tmp_video_path.exists():
             st.video(str(tmp_video_path))
 
             with col_v2:
@@ -991,7 +1139,7 @@ with tabs["tab_video"]:
                             st.download_button("📥 PCI CSV", df.to_csv(index=False).encode("utf-8"),
                                                file_name="pci_timeseries.csv", mime="text/csv")
         else:
-            st.info("👆 " + ("Tải lên video để xử lý." if st.session_state["lang"] == "vi" else "Upload video to process."))
+            st.info("👆 " + ("Chọn nguồn video (Upload / URL / Drive) để xử lý." if st.session_state["lang"] == "vi" else "Select video source (Upload / URL / Drive) to process."))
             st.markdown("""
             **" + ("Video demo có sẵn:" if st.session_state["lang"] == "vi" else "Demo video available:") + "**
             - `outputs/demo_annotated.mp4` — render bằng `render_video.py` từ ảnh mẫu
