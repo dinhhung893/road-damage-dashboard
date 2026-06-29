@@ -391,9 +391,33 @@ def _list_drive_videos(folder_path: str) -> list[str]:
 
 
 def _is_colab() -> bool:
-    """Check if running on Colab (Linux + /content exists)."""
+    """Check if running on Colab (Linux + /content exists). Drive may not be mounted yet."""
     import os as _os
-    return _os.path.isdir("/content") and _os.path.exists("/content/drive")
+    return _os.path.isdir("/content")
+
+
+def _is_drive_mounted() -> bool:
+    """Check if Google Drive is mounted at /content/drive/MyDrive."""
+    import os as _os
+    return _os.path.isdir("/content/drive/MyDrive")
+
+
+def _mount_drive() -> bool:
+    """Mount Google Drive from within Streamlit app (Colab only). Returns True if mounted."""
+    if not _is_colab():
+        return False
+    if _is_drive_mounted():
+        return True
+    try:
+        # Import + mount in subprocess-safe way
+        import subprocess
+        result = subprocess.run(
+            ["python", "-c", "from google.colab import drive; drive.mount('/content/drive')"],
+            capture_output=True, text=True, timeout=60
+        )
+        return _is_drive_mounted()
+    except Exception:
+        return False
 
 
 def _source_selector(key_suffix: str = "", file_type: str = "image") -> tuple[str, Path | None, Image.Image | None, str]:
@@ -464,9 +488,20 @@ def _source_selector(key_suffix: str = "", file_type: str = "image") -> tuple[st
 
     elif source == "drive":
         if not _is_colab():
-            st.warning("⚠️ " + ("Google Drive chỉ khả dụng trên Colab. Mount Drive trước (from google.colab import drive; drive.mount('/content/drive'))." if is_vi else "Google Drive only on Colab. Mount first."))
+            st.warning("⚠️ " + ("Google Drive chỉ khả dụng trên Colab." if is_vi else "Google Drive only on Colab."))
+        elif not _is_drive_mounted():
+            # Drive not mounted yet — show mount button
+            st.info("📁 " + ("Google Drive chưa mount. Nhấn nút bên dưới để mount tự động." if is_vi else "Drive not mounted. Click button to auto-mount."))
+            if st.button("🔗 " + ("Mount Google Drive" if is_vi else "Mount Google Drive"), key=f"mount_{key_suffix}", type="primary"):
+                with st.spinner(("Đang mount Drive..." if is_vi else "Mounting Drive...")):
+                    if _mount_drive():
+                        st.success("✓ " + ("Drive đã mount! Chọn thư mục bên dưới." if is_vi else "Drive mounted! Select folder below."))
+                        st.rerun()
+                    else:
+                        st.error("❌ " + ("Mount thất bại. Thử mount thủ công trong Colab cell: `from google.colab import drive; drive.mount('/content/drive')`" if is_vi else "Mount failed. Try manual: `from google.colab import drive; drive.mount('/content/drive')`"))
         else:
-            default_path = "/content/drive/MyDrive" if is_vi else "/content/drive/MyDrive"
+            # Drive mounted — show folder browser
+            default_path = "/content/drive/MyDrive"
             drive_path = st.text_input(
                 "Đường dẫn thư mục Drive" if is_vi else "Drive folder path",
                 value=default_path,
