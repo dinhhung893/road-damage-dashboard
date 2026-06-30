@@ -94,13 +94,13 @@ def _log(msg: str, level: str = "info") -> None:
 # Video / file helpers — browser-compatible re-encode + Drive FUSE localization
 # =============================================================================
 def _ensure_browser_video(src_path) -> Path:
-    """Re-encode OpenCV output to H264 / yuv420p + faststart so HTML5 <video>
-    (st.video) can play it AND it downloads fast.
+    """Re-encode OpenCV output to FULL-QUALITY H264 / yuv420p + faststart.
 
     OpenCV on Colab writes mp4v (MPEG-4 Part 2) — Chrome/Firefox CANNOT decode it
-    in a <video> tag, so st.video shows nothing. ffmpeg (pre-installed on Colab)
-    transcodes to H264 baseline yuv420p which every browser plays; +faststart moves
-    the moov atom to the front for instant/progressive streaming + faster download.
+    in a <video> tag, so st.video shows nothing. ffmpeg transcodes to H264 yuv420p
+    which every browser plays; +faststart enables progressive streaming + fast
+    download. CRF 18 = VISUALLY LOSSLESS — the output looks identical to the source;
+    the smaller file size is purely H264's superior compression, NOT quality loss.
     """
     src_path = Path(src_path)
     ffmpeg = shutil.which("ffmpeg")
@@ -111,17 +111,17 @@ def _ensure_browser_video(src_path) -> Path:
         return src_path
     h264 = src_path.with_name(src_path.stem + "_web.mp4")
     try:
-        _log(f"Re-encoding video -> H264 (browser-compatible + faststart): {src_path.name}")
+        _log(f"Re-encoding -> H264 CRF18 (visually lossless + faststart): {src_path.name}")
         r = subprocess.run(
             [ffmpeg, "-y", "-i", str(src_path),
-             "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+             "-c:v", "libx264", "-preset", "medium", "-crf", "18",
              "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an", str(h264)],
-            capture_output=True, text=True, timeout=900,
+            capture_output=True, text=True, timeout=1800,
         )
         if r.returncode == 0 and h264.exists() and h264.stat().st_size > 1000:
             old_mb = src_path.stat().st_size / 1e6
             new_mb = h264.stat().st_size / 1e6
-            _log(f"H264 OK: {h264.name} ({new_mb:.1f}MB, was {old_mb:.1f}MB)")
+            _log(f"H264 full OK: {h264.name} ({new_mb:.1f}MB, mp4v was {old_mb:.1f}MB)")
             try:
                 src_path.unlink(missing_ok=True)  # drop bulky mp4v
             except Exception:
@@ -129,10 +129,97 @@ def _ensure_browser_video(src_path) -> Path:
             return h264
         _log(f"ffmpeg re-encode failed (rc={r.returncode}): {r.stderr[-400:]}", "error")
     except subprocess.TimeoutExpired:
-        _log("ffmpeg timeout (>15min) — keeping mp4v", "error")
+        _log("ffmpeg timeout (>30min) — keeping mp4v", "error")
     except Exception as e:
         _log(f"ffmpeg exception: {e}", "error")
     return src_path
+
+
+def _make_preview_proxy(full_path) -> Path | None:
+    """Make a small 480p low-bitrate proxy for FAST in-dashboard st.video over the
+    slow cloudflared tunnel. The full-quality file stays for download/Drive.
+
+    The cloudflared quick-tunnel is bandwidth-limited (~tens of kB/s), so serving an
+    80MB video through st.video buffers forever. A ~2-5MB 480p proxy plays instantly;
+    the user downloads the real full-quality file from Google Drive (CDN, fast).
+    """
+    full_path = Path(full_path)
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg or not full_path.exists():
+        return None
+    proxy = full_path.with_name(full_path.stem + "_preview.mp4")
+    try:
+        r = subprocess.run(
+            [ffmpeg, "-y", "-i", str(full_path),
+             "-vf", "scale=-2:480", "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
+             "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an", str(proxy)],
+            capture_output=True, text=True, timeout=900,
+        )
+        if r.returncode == 0 and proxy.exists() and proxy.stat().st_size > 500:
+            _log(f"Preview proxy OK: {proxy.name} ({proxy.stat().st_size/1e6:.1f}MB, 480p)")
+            return proxy
+        _log(f"Proxy encode failed (rc={r.returncode}): {r.stderr[-300:]}", "warning")
+    except Exception as e:
+        _log(f"Proxy exception: {e}", "warning")
+    return None
+
+
+class _FFmpegWriter:
+    """Pipe annotated BGR frames STRAIGHT into ffmpeg → a single H264 CRF18 encode.
+
+    This is the max-quality path: there is NO lossy mp4v intermediate (OpenCV's
+    VideoWriter would re-compress once, then we'd re-encode again = double loss).
+    Frames go raw → ffmpeg → final browser-ready H264/yuv420p + faststart in one pass,
+    so the output is visually identical to the source resolution/quality.
+    Mirrors the cv2.VideoWriter API (write / isOpened / release).
+    """
+
+    def __init__(self, path, w, h, fps):
+        self.path = str(path)
+        self.proc = None
+        ff = shutil.which("ffmpeg")
+        if not ff:
+            return
+        fps = fps if (fps and fps > 0) else 25.0
+        try:
+            self.proc = subprocess.Popen(
+                [ff, "-y", "-f", "rawvideo", "-pix_fmt", "bgr24",
+                 "-s", f"{int(w)}x{int(h)}", "-r", f"{fps:.6f}", "-i", "-",
+                 "-an", "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+                 "-pix_fmt", "yuv420p", "-movflags", "+faststart", self.path],
+                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            )
+        except Exception as e:
+            _log(f"_FFmpegWriter init failed: {e}", "error")
+            self.proc = None
+
+    def isOpened(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    def write(self, frame):
+        if self.proc and self.proc.stdin:
+            try:
+                self.proc.stdin.write(frame.tobytes())
+            except Exception:
+                pass
+
+    def release(self):
+        if not self.proc:
+            return
+        try:
+            if self.proc.stdin:
+                self.proc.stdin.close()
+            self.proc.wait(timeout=300)
+        except Exception:
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
+
+
+# Placeholder for the processing UI (progress + live console). Created in the LEFT
+# preview column so it fills the wide empty space; _do_process_video renders into it.
+_PROC_AREA = None
 
 
 def _localize(path) -> Path:
@@ -505,6 +592,10 @@ _ss.setdefault("last_annotated", None)        # PIL annotated
 _ss.setdefault("last_source_name", "")        # source file name
 _ss.setdefault("last_elapsed_ms", 0)
 _ss.setdefault("last_batch_results", [])      # list of dicts (batch)
+_ss.setdefault("last_video_annotated", None)  # full-quality H264 path
+_ss.setdefault("last_video_preview", None)    # small 480p proxy path (fast preview)
+_ss.setdefault("last_video_drive", None)      # Drive copy path (fast download)
+_ss.setdefault("last_pci_series", [])         # video PCI time-series
 # History + DB
 _ss.setdefault("history", [])
 _db_dir = "/content" if os.path.isdir("/content") else tempfile.gettempdir()
@@ -996,6 +1087,50 @@ def _render_preview_and_config():
 
     col_preview, col_config = st.columns([2.5, 1])
 
+    # LEFT (preview) is rendered FIRST in code so the processing-area placeholder exists
+    # when the config button (rendered after) triggers _do_process and writes the live
+    # progress + console into it — filling the wide empty space under the preview.
+    global _PROC_AREA
+    with col_preview:
+        if not has_file:
+            st.info(f"👆 {_t('no_image_loaded')}")
+        elif sel_type == "video":
+            # Preview uses the small 480p proxy (fast over the tunnel); full quality is
+            # downloaded from Drive. Before processing, show original (skip Drive FUSE paths).
+            preview = st.session_state.get("last_video_preview") or st.session_state.get("last_video_annotated")
+            if preview and Path(preview).exists():
+                st.markdown(f"**🎬 {_t('done')} — {_t('results_title')}** · " +
+                            ("bản xem nhanh 480p · tải bản gốc bên dưới" if st.session_state["lang"] == "vi"
+                             else "480p preview · download full quality below"))
+                st.video(preview)
+            else:
+                vp = st.session_state.get("sel_video_path") or st.session_state.get("sel_file_path")
+                if vp and Path(vp).exists() and "/content/drive" not in str(vp).replace("\\", "/"):
+                    st.video(str(vp))
+                else:
+                    st.info("▶️ " + ("Nhấn 'Xử lý video' để bắt đầu" if st.session_state["lang"] == "vi"
+                                     else "Click 'Process video' to start"))
+            # (file-info box removed per request — frees the wide space for the live console)
+        elif sel_type == "batch":
+            paths = st.session_state.get("sel_batch_paths", [])
+            pils = st.session_state.get("sel_batch_pils", [])
+            if paths:
+                st.markdown(f"**📁 {len(paths)} {_t('detections').lower()}**")
+                nc = min(5, len(paths))
+                bc = st.columns(nc)
+                for idx, (p, pil) in enumerate(zip(paths, pils)):
+                    with bc[idx % nc]:
+                        thumb = pil.copy()
+                        thumb.thumbnail((120, 120))
+                        st.image(thumb, width=120)
+                        st.caption(Path(p).name[:18])
+        else:  # image
+            pil = st.session_state.get("sel_pil")
+            if pil:
+                st.image(pil, width=600)
+        # Live processing area (progress + real-time console) — fills the empty space here
+        _PROC_AREA = st.container()
+
     with col_config:
         # Config panel (always visible)
         st.markdown(f'<div class="config-card">', unsafe_allow_html=True)
@@ -1055,63 +1190,6 @@ def _render_preview_and_config():
                 _do_process()
         st.markdown("</div>", unsafe_allow_html=True)
 
-    with col_preview:
-        # Preview — state lock (renders from session_state, not file picker)
-        if not has_file:
-            st.info(f"👆 {_t('no_image_loaded')}")
-            return
-
-        if sel_type == "video":
-            # After processing: show annotated video. Before: show original.
-            annotated = st.session_state.get("last_video_annotated")
-            if annotated and Path(annotated).exists():
-                st.markdown(f"**🎬 {_t('done')} — {_t('results_title')}**")
-                st.video(annotated)
-            else:
-                vp = st.session_state.get("sel_video_path") or st.session_state.get("sel_file_path")
-                if vp and Path(vp).exists():
-                    st.video(str(vp))
-            # File info (always show)
-            vp_info = st.session_state.get("sel_video_path") or st.session_state.get("sel_file_path")
-            if vp_info and Path(vp_info).exists():
-                cap = cv2.VideoCapture(str(vp_info))
-                if cap.isOpened():
-                    w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    fps = cap.get(cv2.CAP_PROP_FPS) or 0
-                    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                    dur = total / fps if fps > 0 else 0
-                    cap.release()
-                    st.markdown(f"""
-                    <div class="file-info">
-                    📋 <b>{st.session_state['sel_file_name']}</b><br/>
-                    📐 {w}×{h} @ {fps:.0f}fps · ⏱️ {dur:.0f}s · 📦 {_format_size(Path(vp_info).stat().st_size)}
-                    </div>
-                    """, unsafe_allow_html=True)
-
-        elif sel_type == "batch":
-            paths = st.session_state.get("sel_batch_paths", [])
-            pils = st.session_state.get("sel_batch_pils", [])
-            if paths:
-                st.markdown(f"**📁 {len(paths)} {_t('detections').lower()}**")
-                nc = min(5, len(paths))
-                bc = st.columns(nc)
-                for idx, (p, pil) in enumerate(zip(paths, pils)):
-                    with bc[idx % nc]:
-                        thumb = pil.copy()
-                        thumb.thumbnail((120, 120))
-                        st.image(thumb, width=120)
-                        st.caption(Path(p).name[:18])
-
-        else:  # image
-            pil = st.session_state.get("sel_pil")
-            if pil:
-                st.image(pil, width=600)
-                st.markdown(f"""
-                <div class="file-info">
-                📋 <b>{st.session_state['sel_file_name']}</b> · 📐 {pil.size[0]}×{pil.size[1]}
-                </div>
-                """, unsafe_allow_html=True)
-
 
 def _do_process():
     """Run inference based on selected type. Stores results in session_state."""
@@ -1160,18 +1238,23 @@ def _do_process_video():
     out_dir = "/content" if os.path.isdir("/content") else str(Path.cwd() / "outputs")
     Path(out_dir).mkdir(parents=True, exist_ok=True)
     out_path = Path(out_dir) / "annotated_video.mp4"
-    # OpenCV writes mp4v reliably on every platform; we re-encode to browser-playable
-    # H264 with ffmpeg AFTER (avc1/H264 fourcc fail silently on Colab's opencv build).
-    out = None
-    for codec in ["mp4v", "MJPG"]:
-        fourcc = cv2.VideoWriter_fourcc(*codec)
-        out = cv2.VideoWriter(str(out_path), fourcc, fps, (w, h))
-        if out.isOpened():
-            _log(f"VideoWriter codec={codec} {w}x{h}@{fps:.1f}fps total={total}")
-            break
+    # Writer: prefer piping frames STRAIGHT to ffmpeg (single H264 CRF18 encode = max
+    # quality, no lossy mp4v intermediate). Fall back to cv2 mp4v (+ re-encode) if no ffmpeg.
+    use_ffmpeg = shutil.which("ffmpeg") is not None
+    if use_ffmpeg:
+        out = _FFmpegWriter(out_path, w, h, fps)
+        _log(f"Writer: ffmpeg pipe -> H264 CRF18 direct {w}x{h}@{fps:.1f}fps total={total}")
+    else:
+        out = None
+        for codec in ["mp4v", "MJPG"]:
+            fourcc = cv2.VideoWriter_fourcc(*codec)
+            out = cv2.VideoWriter(str(out_path), fourcc, fps, (w, h))
+            if out.isOpened():
+                _log(f"Writer: cv2 {codec} {w}x{h}@{fps:.1f}fps total={total} (will re-encode)")
+                break
     if not out or not out.isOpened():
-        _log("VideoWriter failed to open (all codecs)", "error")
-        st.error("❌ VideoWriter codec fail")
+        _log("Video writer failed to open", "error")
+        st.error("❌ VideoWriter fail")
         cap.release()
         return
 
@@ -1183,16 +1266,13 @@ def _do_process_video():
     if max_proc <= 0:
         max_proc = total  # fallback: process all
 
-    # Progress + Console — single column below video (compact, no warning column)
-    progress_container = st.container()
-    with progress_container:
+    # Progress + live console render in the LEFT preview column (_PROC_AREA) so they fill
+    # the wide empty space under the video instead of the cramped config column.
+    area = _PROC_AREA if _PROC_AREA is not None else st.container()
+    with area:
         st.markdown("---")
         progress = st.progress(0.0, text=f"⏳ {_t('processing')}... (~{(max_proc * 1.5):.0f}s)" if max_proc else f"⏳ {_t('processing')}...")
         st.caption("⚠️ " + ("Đang xử lý — vui lòng đợi, không chuyển tab" if st.session_state["lang"] == "vi" else "Processing — please wait, don't switch tabs"))
-
-    # Console area (real-time log below progress)
-    console_container = st.container()
-    with console_container:
         console_exp = st.expander("📜 " + ("Console (real-time)", "Console (real-time)")[st.session_state["lang"] == "en"], expanded=True)
         console_placeholder = console_exp.empty()
 
@@ -1266,18 +1346,36 @@ def _do_process_video():
     cap.release()
     out.release()
     _log(f"VIDEO RENDER DONE: {processed} frames in {time.time()-t0:.1f}s -> {out_path}")
-    # Re-encode mp4v -> H264 so st.video plays it AND downloads are fast (faststart).
-    _spin = "🎞️ " + ("Chuyển mã H264 (để xem & tải nhanh)..." if st.session_state["lang"] == "vi" else "Transcoding to H264 (playback & fast download)...")
+    _spin = "🎞️ " + ("Hoàn tất video + bản xem nhanh..." if st.session_state["lang"] == "vi" else "Finalizing video + fast preview...")
+    proxy_path = None
+    drive_saved = None
     with st.spinner(_spin):
-        out_path = _ensure_browser_video(out_path)
+        if not use_ffmpeg:
+            out_path = _ensure_browser_video(out_path)    # cv2 fallback: re-encode mp4v -> H264 CRF18
+        proxy_path = _make_preview_proxy(out_path)        # small 480p proxy for fast preview over tunnel
+        # Auto-save full quality to Drive — downloading from Drive bypasses the slow tunnel
+        _drive = Path("/content/drive/MyDrive")
+        if _drive.exists() and Path(out_path).exists():
+            try:
+                _dst = _drive / f"road_damage_annotated_{int(time.time())}.mp4"
+                shutil.copy2(str(out_path), str(_dst))
+                drive_saved = _dst
+                _log(f"Auto-saved full-quality video to Drive: {_dst}")
+            except Exception as e:
+                _log(f"Auto-save to Drive failed: {e}", "error")
     progress.empty()
     st.session_state["is_processing"] = False
 
     st.session_state["last_batch_results"] = []
     st.session_state["last_video_annotated"] = str(out_path)
+    st.session_state["last_video_preview"] = str(proxy_path) if proxy_path else str(out_path)
+    st.session_state["last_video_drive"] = str(drive_saved) if drive_saved else None
     st.session_state["last_pci_series"] = pci_series
     st.session_state["last_source_name"] = st.session_state["sel_file_name"]
     st.success(f"✓ {processed} frames in {time.time()-t0:.1f}s")
+    if drive_saved:
+        st.success(("💾 Đã lưu bản chất lượng gốc vào Drive: MyDrive/" if st.session_state["lang"] == "vi"
+                    else "💾 Full quality saved to Drive: MyDrive/") + drive_saved.name)
     _log(f"VIDEO COMPLETE -> {out_path}")
 
 
@@ -1325,26 +1423,37 @@ def _render_results():
                 st.line_chart(df.set_index("frame")["pci"])
             with col_table:
                 st.dataframe(df, use_container_width=True, hide_index=True)
-            # Downloads — video is H264 + faststart (plays in browser, small, fast).
+            # Downloads. Full file is H264 CRF18 (VISUALLY LOSSLESS — same quality as
+            # source; smaller size = H264 efficiency). The cloudflared tunnel is slow
+            # (~50 kB/s) so Google Drive is the recommended fast download path.
             _is_vi = st.session_state["lang"] == "vi"
             ann_path = st.session_state["last_video_annotated"]
+            drive_path = st.session_state.get("last_video_drive")
+            _drive = Path("/content/drive/MyDrive")
+            _sz = Path(ann_path).stat().st_size / 1e6 if (ann_path and Path(ann_path).exists()) else 0
+            if drive_path and Path(drive_path).exists():
+                st.success(("✅ Bản CHẤT LƯỢNG GỐC đã lưu trên Google Drive — tải tại Drive (NHANH NHẤT): MyDrive/"
+                            if _is_vi else "✅ FULL-QUALITY saved on Google Drive — download there (FASTEST): MyDrive/") + Path(drive_path).name)
+            elif not _drive.exists():
+                st.info("ℹ️ " + ("Mount Google Drive (cell 2.5) để tự lưu bản gốc + tải nhanh, tránh tunnel chậm."
+                                 if _is_vi else "Mount Google Drive (cell 2.5) to auto-save full quality + fast download."))
+            st.caption(("📦 Bản gốc H264 CRF18 (visually lossless — chất lượng như video gốc) · %.1fMB" % _sz)
+                       if _is_vi else ("📦 Full H264 CRF18 (visually lossless) · %.1fMB" % _sz))
             c1, c2, c3 = st.columns(3)
             with c1:
                 if ann_path and Path(ann_path).exists():
-                    _sz = Path(ann_path).stat().st_size / 1e6
-                    st.download_button(f"📥 Video MP4 ({_sz:.1f}MB)", data=open(ann_path, "rb").read(),
-                                       file_name="annotated.mp4", mime="video/mp4")
+                    st.download_button("� " + ("Video gốc" if _is_vi else "Full video") + f" ({_sz:.1f}MB)",
+                                       data=open(ann_path, "rb").read(), file_name="annotated_full.mp4", mime="video/mp4",
+                                       help=("Qua tunnel — có thể chậm; ưu tiên tải từ Drive" if _is_vi else "Via tunnel — may be slow; prefer Drive"))
             with c2:
-                # Save to Drive — on Colab, downloading from Drive is FAR faster than via the tunnel
-                _drive = Path("/content/drive/MyDrive")
-                if ann_path and Path(ann_path).exists() and _drive.exists():
-                    if st.button("💾 " + ("Lưu vào Drive" if _is_vi else "Save to Drive"), key="vid_to_drive",
-                                 help="Tải nhanh: lưu vào Drive rồi tải từ Drive" if _is_vi else "Faster: save to Drive, download from Drive"):
+                if ann_path and Path(ann_path).exists() and _drive.exists() and not drive_path:
+                    if st.button("💾 " + ("Lưu vào Drive" if _is_vi else "Save to Drive"), key="vid_to_drive"):
                         try:
                             _dst = _drive / f"road_damage_annotated_{int(time.time())}.mp4"
                             shutil.copy2(str(ann_path), str(_dst))
+                            st.session_state["last_video_drive"] = str(_dst)
                             _log(f"Saved annotated video to Drive: {_dst}")
-                            st.success(f"✓ Drive: MyDrive/{_dst.name}")
+                            st.rerun()
                         except Exception as e:
                             _log(f"Save-to-Drive failed: {e}", "error")
                             st.error(f"❌ {e}")
